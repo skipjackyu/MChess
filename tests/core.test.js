@@ -41,6 +41,28 @@ test('board exposes 60 nodes with 10 empty camps and four headquarters', () => {
   );
 });
 
+test('upper board node types and roads mirror the lower board', () => {
+  for (const { col, row } of boardInstance.getAllPositions()) {
+    const mirrorRow = 11 - row;
+    assert.equal(
+      boardInstance.getNodeType(col, row),
+      boardInstance.getNodeType(col, mirrorRow),
+      `node type is not mirrored at ${col},${row}`
+    );
+
+    const mirroredLinks = boardInstance.getAdjacentPositions(col, row)
+      .map(link => {
+        const target = Board.parseKey(link.pos);
+        return `${target.col},${11 - target.row}:${link.type}`;
+      })
+      .sort();
+    const oppositeLinks = boardInstance.getAdjacentPositions(col, mirrorRow)
+      .map(link => `${link.pos}:${link.type}`)
+      .sort();
+    assert.deepEqual(mirroredLinks, oppositeLinks, `roads are not mirrored at ${col},${row}`);
+  }
+});
+
 test('new game fills every non-camp node with a hidden piece', () => {
   const game = new GameManager();
   game.reset(GameMode.PVE, 'easy', DefaultSettings);
@@ -111,6 +133,45 @@ test('renderer converts every node between board and canvas coordinates', () => 
       assert.ok(bounds.bottom <= renderer.height, `piece clips on bottom at ${col},${row}`);
     }
   }
+});
+
+test('renderer uses piece shadows without top highlight bars', () => {
+  const fillSnapshots = [];
+  const fillRects = [];
+  const context = {
+    shadowBlur: 0,
+    shadowOffsetX: 0,
+    shadowOffsetY: 0,
+    beginPath() {},
+    moveTo() {},
+    lineTo() {},
+    arcTo() {},
+    closePath() {},
+    stroke() {},
+    fillText() {},
+    fill() {
+      fillSnapshots.push({
+        shadowBlur: context.shadowBlur,
+        shadowOffsetX: context.shadowOffsetX,
+        shadowOffsetY: context.shadowOffsetY
+      });
+    },
+    fillRect(...args) { fillRects.push(args); }
+  };
+  const renderer = new Renderer(context, 360, 493, 2);
+  const revealed = createPiece(PieceType.GENERAL, Side.RED, 100);
+  revealed.revealed = true;
+
+  renderer._drawSinglePiece(100, 100, revealed, false);
+  assert.equal(fillSnapshots.length, 1);
+  assert.deepEqual(fillSnapshots[0], { shadowBlur: 7, shadowOffsetX: 0, shadowOffsetY: 3 });
+  assert.equal(fillRects.length, 0);
+  assert.equal(context.shadowBlur, 0);
+
+  fillSnapshots.length = 0;
+  renderer._drawSinglePiece(100, 100, createPiece(PieceType.GENERAL, Side.RED, 101), false);
+  assert.equal(fillSnapshots.length, 1);
+  assert.equal(fillRects.length, 1);
 });
 
 test('hard AI takes an immediately available flag', () => {

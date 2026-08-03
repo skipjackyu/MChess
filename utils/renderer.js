@@ -271,7 +271,7 @@ class Renderer {
   _drawCamps() {
     const ctx = this.ctx;
     const campPositions = [
-      [1, 1], [3, 1], [2, 2], [1, 3], [3, 3],
+      [1, 2], [3, 2], [2, 3], [1, 4], [3, 4],
       [1, 7], [3, 7], [2, 8], [1, 9], [3, 9]
     ];
     
@@ -298,7 +298,7 @@ class Renderer {
 
   _drawHeadquarters() {
     const ctx = this.ctx;
-    const positions = [[1, 5], [3, 5], [1, 11], [3, 11]];
+    const positions = [[1, 0], [3, 0], [1, 11], [3, 11]];
     const width = Theme.pieceWidth * 0.9;
     const height = Theme.pieceHeight * 0.82;
 
@@ -406,10 +406,10 @@ class Renderer {
     const top = y - h / 2;
     
     // 棋子阴影
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
-    ctx.shadowBlur = 4;
-    ctx.shadowOffsetX = 2;
-    ctx.shadowOffsetY = 2;
+    ctx.shadowColor = 'rgba(38, 28, 18, 0.42)';
+    ctx.shadowBlur = 7;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 3;
     
     if (piece.revealed) {
       // 已翻开 - 显示棋子信息
@@ -420,10 +420,6 @@ class Renderer {
       this._roundRect(left, top, w, h, r);
       ctx.fill();
 
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.16)';
-      this._roundRect(left + 2, top + 2, w - 4, Math.max(3, h * 0.2), Math.max(2, r - 2));
-      ctx.fill();
-      
       // 边框
       ctx.shadowColor = 'transparent';
       ctx.strokeStyle = colors.border;
@@ -443,9 +439,6 @@ class Renderer {
       this._roundRect(left, top, w, h, r);
       ctx.fill();
 
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
-      ctx.fillRect(left + 2, top + 2, w - 4, Math.max(3, h * 0.18));
-      
       ctx.shadowColor = 'transparent';
       ctx.strokeStyle = HiddenColor.border;
       ctx.lineWidth = 2;

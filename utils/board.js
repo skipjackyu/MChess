@@ -81,8 +81,8 @@ class Board {
       }
     }
 
-    // 上方行营位置 (行1, 行3 的 col 1,3 和 行2 的 col 2)
-    const upperCamps = [[1, 1], [3, 1], [2, 2], [1, 3], [3, 3]];
+    // 上方行营位置，与下方棋盘沿河界镜像
+    const upperCamps = [[1, 2], [3, 2], [2, 3], [1, 4], [3, 4]];
     for (const [c, r] of upperCamps) {
       this.nodeTypes[Board.posKey(c, r)] = NodeType.CAMP;
     }
@@ -94,8 +94,8 @@ class Board {
     }
 
     // 上方大本营
-    this.nodeTypes[Board.posKey(1, 5)] = NodeType.HQ;
-    this.nodeTypes[Board.posKey(3, 5)] = NodeType.HQ;
+    this.nodeTypes[Board.posKey(1, 0)] = NodeType.HQ;
+    this.nodeTypes[Board.posKey(3, 0)] = NodeType.HQ;
 
     // 下方大本营
     this.nodeTypes[Board.posKey(1, 11)] = NodeType.HQ;
@@ -212,11 +212,11 @@ class Board {
 
     // === 公路连接 ===
     
-    // 上方阵营内部公路 (行0~5)
-    this._buildZoneRoads(0, 5);
+    // 上方阵营内部公路，从河界向上镜像构建
+    this._buildZoneRoads(5, -1);
     
-    // 下方阵营内部公路 (行6~11)  
-    this._buildZoneRoads(6, 11);
+    // 下方阵营内部公路，从河界向下构建
+    this._buildZoneRoads(6, 1);
     
     // 跨河公路连接 (行5到行6)
     // 左右铁路已连，中间铁路已连，补充公路连接
@@ -226,29 +226,25 @@ class Board {
 
   /**
    * 构建一个阵营区域内的公路连接
-   * @param {number} startRow - 起始行
-   * @param {number} endRow - 结束行
+   * @param {number} riverRow - 靠近河界的铁路行
+   * @param {number} direction - 从河界指向大本营的行方向
    */
-  _buildZoneRoads(startRow, endRow) {
-    const r0 = startRow;  // 对应参考图的最外行(铁路行)
-    const r1 = r0 + 1;
-    const r2 = r0 + 2;
-    const r3 = r0 + 3;
-    const r4 = r0 + 4;
-    const r5 = r0 + 5;    // 大本营行(铁路行)
+  _buildZoneRoads(riverRow, direction) {
+    const r0 = riverRow;
+    const r1 = r0 + direction;
+    const r2 = r1 + direction;
+    const r3 = r2 + direction;
+    const r4 = r3 + direction;
+    const r5 = r4 + direction;
 
     // --- 纵向公路 ---
-    // col 1: row r0->r1->r2->r3->r4->r5
-    for (let r = r0; r < r5; r++) {
-      this._addLink(1, r, 1, r + 1, LinkType.ROAD);
-    }
-    // col 2: row r0->r1, r1->r2, r2->r3, r3->r4, r4->r5
-    for (let r = r0; r < r5; r++) {
-      this._addLink(2, r, 2, r + 1, LinkType.ROAD);
-    }
-    // col 3: row r0->r1->r2->r3->r4->r5
-    for (let r = r0; r < r5; r++) {
-      this._addLink(3, r, 3, r + 1, LinkType.ROAD);
+    const zoneRows = [r0, r1, r2, r3, r4, r5];
+    for (let index = 0; index < zoneRows.length - 1; index++) {
+      const fromRow = zoneRows[index];
+      const toRow = zoneRows[index + 1];
+      this._addLink(1, fromRow, 1, toRow, LinkType.ROAD);
+      this._addLink(2, fromRow, 2, toRow, LinkType.ROAD);
+      this._addLink(3, fromRow, 3, toRow, LinkType.ROAD);
     }
 
     // --- 横向公路 ---
