@@ -66,7 +66,7 @@ test('game.js boots as a Mini Game and responds to canvas touch input', () => {
   assert.equal(typeof handlers.touchEnd, 'function');
 
   const homeIds = gameModule.state.hitAreas.map((area) => area.id);
-  assert.deepEqual(homeIds, ['start:pve', 'start:pvp', 'snapshots:open']);
+  assert.deepEqual(homeIds, ['start:pve', 'start:endgame', 'start:pvp', 'snapshots:open']);
 
   function tapArea(id) {
     const area = [...gameModule.state.hitAreas].reverse().find((candidate) => candidate.id === id);
@@ -138,6 +138,18 @@ test('game.js boots as a Mini Game and responds to canvas touch input', () => {
   assert.equal(gameModule.state.overlay, 'menu');
   tapArea('menu:home');
   assert.equal(gameModule.state.screen, 'home');
+
+  tapArea('start:endgame');
+  assert.equal(gameModule.state.screen, 'game');
+  assert.equal(gameModule.state.mode, 'endgame');
+  assert.equal(gameModule.state.gameManager.sidesAssigned, true);
+  assert.equal(gameModule.state.gameManager.playerSide, gameModule.state.gameManager.currentSide);
+  assert.ok(gameModule.state.gameManager.ai);
+  assert.ok(Object.keys(gameModule.state.gameManager.boardState).length < 50);
+  const endgameBoard = JSON.stringify(gameModule.state.gameManager.boardState);
+  tapBoardButton('menu');
+  tapArea('menu:restart');
+  assert.equal(JSON.stringify(gameModule.state.gameManager.boardState), endgameBoard);
 
   delete global.wx;
 });

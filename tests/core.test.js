@@ -5,6 +5,7 @@ const { Board, NodeType, boardInstance } = require('../utils/board');
 const { GameManager, GameMode } = require('../utils/gameManager');
 const { Renderer } = require('../utils/renderer');
 const { AI, Difficulty } = require('../utils/ai');
+const { generateEndgame } = require('../utils/endgameGenerator');
 const {
   PieceType,
   Side,
@@ -258,4 +259,56 @@ test('snapshot store keeps only the newest ten valid games', () => {
   assert.equal(snapshots[0].completedAt, 11);
   assert.equal(snapshots[9].completedAt, 2);
   assert.deepEqual(normalizeSnapshots([null, { version: 0 }, ...snapshots]), snapshots);
+});
+
+test('random endgames are deterministic, legal, and playable', () => {
+  const first = generateEndgame({ seed: 'ENDGAME-TEST', difficulty: Difficulty.MEDIUM });
+  const second = generateEndgame({ seed: 'ENDGAME-TEST', difficulty: Difficulty.MEDIUM });
+
+  assert.deepEqual(first.boardState, second.boardState);
+  assert.equal(first.currentSide, second.currentSide);
+  assert.equal(first.playerSide, first.currentSide);
+  assert.notEqual(first.playerSide, first.aiSide);
+  assert.ok(first.sourceSteps >= 45);
+
+  const pieces = Object.values(first.boardState);
+  assert.ok(pieces.length < 50);
+  assert.ok(pieces.length >= 10);
+  assert.equal(pieces.some((piece) => piece.side === Side.RED && piece.type === PieceType.FLAG), true);
+  assert.equal(pieces.some((piece) => piece.side === Side.BLUE && piece.type === PieceType.FLAG), true);
+  assert.equal(checkGameResult(first.boardState, first.currentSide, 0, 0, first.settings), GameResult.PLAYING);
+
+  const game = new GameManager();
+  assert.equal(game.loadScenario(first), true);
+  assert.equal(game.mode, GameMode.ENDGAME);
+  assert.equal(game.sidesAssigned, true);
+  assert.equal(game.currentSide, game.playerSide);
+  assert.ok(game.ai);
+
+  const snapshot = game.exportSnapshot();
+  const replay = new GameManager();
+  assert.equal(replay.loadReplaySnapshot(snapshot, 0), true);
+  assert.equal(replay.sidesAssigned, true);
+  assert.equal(replay.currentSide, first.currentSide);
+  assert.deepEqual(replay.boardState, first.boardState);
+});
+
+test('random endgame samples avoid terminal or full-board starts', () => {
+  for (let index = 0; index < 12; index++) {
+    const scenario = generateEndgame({
+      seed: `ENDGAME-SAMPLE-${index}`,
+      difficulty: index % 3 === 0
+        ? Difficulty.EASY
+        : index % 3 === 1 ? Difficulty.MEDIUM : Difficulty.HARD
+    });
+    const pieceCount = Object.keys(scenario.boardState).length;
+    assert.ok(pieceCount >= 10 && pieceCount <= 30, `unexpected piece count: ${pieceCount}`);
+    assert.equal(checkGameResult(
+      scenario.boardState,
+      scenario.currentSide,
+      0,
+      0,
+      scenario.settings
+    ), GameResult.PLAYING);
+  }
 });

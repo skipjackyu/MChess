@@ -12,8 +12,13 @@ const { AI, Difficulty } = require('./ai');
 // 游戏模式
 const GameMode = {
   PVP: 'pvp',   // 双人对战
-  PVE: 'pve'    // 人机对战
+  PVE: 'pve',   // 人机对战
+  ENDGAME: 'endgame' // 随机残局
 };
+
+function isAiMode(mode) {
+  return mode === GameMode.PVE || mode === GameMode.ENDGAME;
+}
 
 /**
  * 游戏管理器
@@ -26,7 +31,7 @@ class GameManager {
   /**
    * 重置游戏
    */
-  reset(mode, difficulty, settings) {
+  reset(mode, difficulty, settings, options) {
     // 游戏模式
     this.mode = mode || GameMode.PVE;
     
@@ -35,6 +40,8 @@ class GameManager {
     
     // 规则设置
     this.settings = Object.assign({}, DefaultSettings, settings || {});
+    this.random = options && typeof options.random === 'function' ? options.random : Math.random;
+    this.scenario = null;
     
     // 棋盘状态: posKey => piece
     this.boardState = {};
@@ -55,6 +62,10 @@ class GameManager {
     // 对局快照操作日志（用于持久化复盘）
     this.startedAt = Date.now();
     this.replayInitialBoard = null;
+    this.replayInitialSide = Side.RED;
+    this.replayInitialSidesAssigned = false;
+    this.replayInitialPlayerSide = null;
+    this.replayInitialAiSide = null;
     this.replayActions = [];
     this.isReplay = false;
     
@@ -80,7 +91,7 @@ class GameManager {
     this.replayInitialBoard = this._cloneBoardState();
     
     // 如果是PVE模式，创建AI
-    if (this.mode === GameMode.PVE) {
+    if (isAiMode(this.mode)) {
       // AI的阵营在翻棋后确定
     }
   }
@@ -161,7 +172,7 @@ class GameManager {
       this.playerSide = piece.side;
       this.currentSide = piece.side;
       
-      if (this.mode === GameMode.PVE) {
+      if (isAiMode(this.mode)) {
         this.aiSide = piece.side === Side.RED ? Side.BLUE : Side.RED;
         this.ai = new AI(this.aiSide, this.difficulty);
       }
@@ -304,7 +315,7 @@ class GameManager {
     if (this.gameResult !== GameResult.PLAYING) return { action: 'gameover' };
     
     // PVE模式下，如果是AI的回合，不响应点击
-    if (this.mode === GameMode.PVE && this.sidesAssigned && this.currentSide === this.aiSide) {
+    if (isAiMode(this.mode) && this.sidesAssigned && this.currentSide === this.aiSide) {
       return { action: 'ai_turn' };
     }
     
@@ -388,7 +399,7 @@ class GameManager {
   undo() {
     if (this.history.length === 0) return false;
     
-    if (this.mode === GameMode.PVE) {
+    if (isAiMode(this.mode)) {
       // PVE模式: 撤销两步（自己的和AI的）
       if (this.history.length >= 2) {
         this.history.pop(); // AI的步骤
@@ -451,7 +462,7 @@ class GameManager {
     this.replayActions.length = snapshot.replayActionCount;
     
     // 重建AI
-    if (this.mode === GameMode.PVE && this.aiSide) {
+    if (isAiMode(this.mode) && this.aiSide) {
       this.ai = new AI(this.aiSide, this.difficulty);
     }
   }
@@ -487,7 +498,11 @@ class GameManager {
       totalSteps: this.totalSteps,
       playerSide: this.playerSide,
       aiSide: this.aiSide,
-      initialSide: Side.RED,
+      initialSide: this.replayInitialSide,
+      initialSidesAssigned: this.replayInitialSidesAssigned,
+      initialPlayerSide: this.replayInitialPlayerSide,
+      initialAiSide: this.replayInitialAiSide,
+      scenario: this.scenario ? Object.assign({}, this.scenario) : null,
       initialBoard: this._cloneBoard(this.replayInitialBoard),
       actions: this.replayActions.map(action => Object.assign({}, action, {
         at: action.at ? [...action.at] : undefined,
@@ -495,6 +510,47 @@ class GameManager {
         to: action.to ? [...action.to] : undefined
       }))
     };
+  }
+
+  loadScenario(scenario) {
+    if (!scenario || !scenario.boardState) return false;
+    if (scenario.currentSide !== Side.RED && scenario.currentSide !== Side.BLUE) return false;
+    if (scenario.playerSide !== Side.RED && scenario.playerSide !== Side.BLUE) return false;
+    if (scenario.aiSide !== Side.RED && scenario.aiSide !== Side.BLUE) return false;
+    if (scenario.playerSide === scenario.aiSide) return false;
+
+    this.mode = GameMode.ENDGAME;
+    this.difficulty = scenario.difficulty || Difficulty.EASY;
+    this.settings = Object.assign({}, DefaultSettings, scenario.settings || {});
+    this.boardState = this._cloneBoard(scenario.boardState);
+    this.currentSide = scenario.currentSide;
+    this.firstSide = scenario.playerSide;
+    this.totalSteps = 0;
+    this.noCapSteps = 0;
+    this.history = [];
+    this.gameResult = checkGameResult(this.boardState, this.currentSide, 0, 0, this.settings);
+    if (this.gameResult !== GameResult.PLAYING) return false;
+    this.aiSide = scenario.aiSide;
+    this.ai = new AI(this.aiSide, this.difficulty);
+    this.selectedPos = null;
+    this.reachablePositions = [];
+    this.sidesAssigned = true;
+    this.playerSide = scenario.playerSide;
+    this.startedAt = Date.now();
+    this.replayInitialBoard = this._cloneBoard(this.boardState);
+    this.replayInitialSide = this.currentSide;
+    this.replayInitialSidesAssigned = true;
+    this.replayInitialPlayerSide = this.playerSide;
+    this.replayInitialAiSide = this.aiSide;
+    this.replayActions = [];
+    this.isReplay = false;
+    this.scenario = {
+      version: scenario.version || 1,
+      generatorVersion: scenario.generatorVersion || 1,
+      seed: scenario.seed || '',
+      sourceSteps: scenario.sourceSteps || 0
+    };
+    return true;
   }
 
   loadReplaySnapshot(snapshot, step) {
@@ -517,12 +573,18 @@ class GameManager {
     this.aiSide = null;
     this.selectedPos = null;
     this.reachablePositions = [];
-    this.sidesAssigned = false;
-    this.playerSide = null;
+    this.sidesAssigned = Boolean(snapshot.initialSidesAssigned);
+    this.playerSide = snapshot.initialPlayerSide || null;
+    this.aiSide = snapshot.initialAiSide || null;
     this.startedAt = snapshot.startedAt || Date.now();
     this.replayInitialBoard = this._cloneBoard(snapshot.initialBoard);
+    this.replayInitialSide = snapshot.initialSide || Side.RED;
+    this.replayInitialSidesAssigned = Boolean(snapshot.initialSidesAssigned);
+    this.replayInitialPlayerSide = snapshot.initialPlayerSide || null;
+    this.replayInitialAiSide = snapshot.initialAiSide || null;
     this.replayActions = snapshot.actions.map(action => Object.assign({}, action));
     this.isReplay = true;
+    this.scenario = snapshot.scenario ? Object.assign({}, snapshot.scenario) : null;
 
     for (let index = 0; index < replayStep; index++) {
       this._applyReplayAction(snapshot.actions[index]);
@@ -584,7 +646,7 @@ class GameManager {
    */
   _shuffle(arr) {
     for (let i = arr.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
+      const j = Math.floor(this.random() * (i + 1));
       [arr[i], arr[j]] = [arr[j], arr[i]];
     }
     return arr;
@@ -600,7 +662,7 @@ class GameManager {
     
     if (!this.sidesAssigned) return '请翻开一个棋子';
     
-    if (this.mode === GameMode.PVE && this.currentSide === this.aiSide) {
+    if (isAiMode(this.mode) && this.currentSide === this.aiSide) {
       return 'AI思考中...';
     }
     
@@ -642,5 +704,6 @@ class GameManager {
 
 module.exports = {
   GameManager,
-  GameMode
+  GameMode,
+  isAiMode
 };

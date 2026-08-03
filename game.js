@@ -1,15 +1,16 @@
-const { GameManager, GameMode } = require('./utils/gameManager');
+const { GameManager, GameMode, isAiMode } = require('./utils/gameManager');
 const { Renderer } = require('./utils/renderer');
 const { GameResult, DefaultSettings } = require('./utils/rules');
 const { Side, SideColor } = require('./utils/pieces');
 const { AI, Difficulty } = require('./utils/ai');
 const { normalizeSnapshots, appendSnapshot } = require('./utils/snapshotStore');
+const { createEndgameSeed, generateEndgame } = require('./utils/endgameGenerator');
 
 const SETTINGS_STORAGE_KEY = 'mchess.settings';
 const STATS_STORAGE_KEY = 'mchess.stats';
 const DIFFICULTY_STORAGE_KEY = 'mchess.difficulty';
 const SNAPSHOTS_STORAGE_KEY = 'mchess.snapshots';
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 
 const COLORS = {
   skyTop: '#9BE0F5',
@@ -77,7 +78,9 @@ const state = {
   resultModalOpen: false,
   resultRecorded: false,
   replay: null,
-  snapshotPage: 0
+  snapshotPage: 0,
+  endgameSeed: null,
+  endgameScenario: null
 };
 
 let metrics = readWindowMetrics();
@@ -348,12 +351,13 @@ function renderHome() {
   drawHomeBoardDecoration(panel);
 
   const buttonWidth = panel.width - 58;
-  const buttonHeight = 64;
-  const gap = 12;
-  const startY = panel.y + (panel.height - buttonHeight * 3 - gap * 2) / 2;
+  const buttonHeight = 58;
+  const gap = 8;
+  const startY = panel.y + (panel.height - buttonHeight * 4 - gap * 3) / 2;
   const x = panel.x + 29;
   const choices = [
     ['start:pve', '人机对战', `当前难度：${difficultyLabel(state.difficulty)} · 对局中可调整`, '#178AC8'],
+    ['start:endgame', '随机残局', `当前难度：${difficultyLabel(state.difficulty)} · 合法中后盘`, '#7D4DB3'],
     ['start:pvp', '双人同屏', '与好友轮流翻棋走棋', '#D46A13'],
     ['snapshots:open', '快照复盘', `回溯最近 ${state.snapshots.length} 局完整对局`, '#2B8F63']
   ];
@@ -368,7 +372,9 @@ function renderHome() {
     drawButton(rect, choice[1], choice[2], {
       top: choice[3] === '#178AC8'
         ? '#57C3F3'
-        : choice[3] === '#D46A13' ? '#F6A345' : '#58B987',
+        : choice[3] === '#D46A13'
+          ? '#F6A345'
+          : choice[3] === '#7D4DB3' ? '#B486DF' : '#58B987',
       bottom: choice[3],
       border: 'rgba(255,255,255,0.65)'
     });
@@ -449,7 +455,9 @@ function renderStatusBar(game) {
   drawText(statusText, metrics.width / 2, y + 13, 13, '#294A58', 'center', 'bold', metrics.width - 160);
   const centerLabel = state.replay
     ? '点棋盘下一手 · 回退键上一手'
-    : state.mode === GameMode.PVE
+    : state.mode === GameMode.ENDGAME
+      ? `残局 ${difficultyLabel(state.difficulty)} · ${game.totalSteps}步`
+      : state.mode === GameMode.PVE
       ? `AI ${difficultyLabel(state.difficulty)} · ${game.totalSteps}步`
       : `双人对战 · 第 ${game.totalSteps} 步`;
   const pill = { x: metrics.width / 2 - 55, y: y + 23, width: 110, height: 22 };
@@ -510,7 +518,7 @@ function renderMenuOverlay() {
         ['menu:home', '首', '返回首页'],
         ['menu:about', 'i', '软件信息']
       ]
-    : state.mode === GameMode.PVE
+    : isAiMode(state.mode)
       ? [
         ['menu:restart', '新', '重新开始'],
         ['menu:ai', '走', '电脑走'],
@@ -537,7 +545,9 @@ function renderMenuOverlay() {
   };
   const subtitle = state.replay
     ? '复盘模式'
-    : state.mode === GameMode.PVE ? `AI ${difficultyLabel(state.difficulty)}` : '双人对战';
+    : state.mode === GameMode.ENDGAME
+      ? `随机残局 · ${difficultyLabel(state.difficulty)}`
+      : state.mode === GameMode.PVE ? `AI ${difficultyLabel(state.difficulty)}` : '双人对战';
   drawOverlayPanel(panel, '对局菜单', subtitle);
 
   const contentTop = panel.y + 66;
@@ -619,7 +629,9 @@ function snapshotTitle(snapshot) {
   const day = String(date.getDate()).padStart(2, '0');
   const hour = String(date.getHours()).padStart(2, '0');
   const minute = String(date.getMinutes()).padStart(2, '0');
-  const mode = snapshot.mode === GameMode.PVE ? `人机·${difficultyLabel(snapshot.difficulty)}` : '双人同屏';
+  const mode = snapshot.mode === GameMode.ENDGAME
+    ? `残局·${difficultyLabel(snapshot.difficulty)}`
+    : snapshot.mode === GameMode.PVE ? `人机·${difficultyLabel(snapshot.difficulty)}` : '双人同屏';
   return `${month}-${day} ${hour}:${minute}  ${mode}`;
 }
 
@@ -634,7 +646,7 @@ function snapshotSubtitle(snapshot) {
 
 function renderSettingsOverlay() {
   const draft = state.settingsDraft || Object.assign({}, state.settings);
-  const includeDifficulty = state.mode === GameMode.PVE;
+  const includeDifficulty = isAiMode(state.mode);
   const panelHeight = includeDifficulty ? 492 : 430;
   const panel = {
     x: 16,
@@ -690,10 +702,59 @@ function startGame(mode, difficulty) {
   state.resultModalOpen = false;
   state.resultRecorded = false;
   state.replay = null;
+  state.endgameSeed = null;
+  state.endgameScenario = null;
   render();
 }
 
+function startEndgame(seed, existingScenario) {
+  clearAiTimer();
+  const endgameSeed = seed || createEndgameSeed();
+  let scenario;
+  try {
+    scenario = existingScenario
+      ? Object.assign({}, existingScenario, {
+        difficulty: state.difficulty,
+        settings: Object.assign({}, state.settings)
+      })
+      : generateEndgame({
+        seed: endgameSeed,
+        difficulty: state.difficulty,
+        settings: state.settings
+      });
+  } catch (error) {
+    console.warn('生成残局失败', error);
+    showToast('残局生成失败，请重试');
+    return false;
+  }
+
+  const game = new GameManager();
+  if (!game.loadScenario(scenario)) {
+    showToast('残局数据无效');
+    return false;
+  }
+
+  state.mode = GameMode.ENDGAME;
+  state.gameManager = game;
+  state.screen = 'game';
+  state.overlay = null;
+  state.settingsDraft = null;
+  state.resultModalOpen = false;
+  state.resultRecorded = false;
+  state.replay = null;
+  state.endgameSeed = endgameSeed;
+  state.endgameScenario = scenario;
+  render();
+  showToast(`残局 ${endgameSeed.slice(-5)}`);
+  scheduleAiMove();
+  return true;
+}
+
 function restartGame() {
+  if (state.mode === GameMode.ENDGAME) {
+    startEndgame(state.endgameSeed, state.endgameScenario);
+    return;
+  }
   startGame(state.mode, state.difficulty);
 }
 
@@ -705,6 +766,8 @@ function returnHome() {
   state.settingsDraft = null;
   state.resultModalOpen = false;
   state.replay = null;
+  state.endgameSeed = null;
+  state.endgameScenario = null;
   render();
 }
 
@@ -718,6 +781,7 @@ function handleTouch(point) {
 
   if (state.screen === 'home') {
     if (hit === 'start:pve') startGame(GameMode.PVE);
+    if (hit === 'start:endgame') startEndgame();
     if (hit === 'start:pvp') startGame(GameMode.PVP);
     if (hit === 'snapshots:open') openSnapshots();
     return;
@@ -911,7 +975,7 @@ function setDifficulty(difficulty) {
   }
 
   const game = state.gameManager;
-  if (game && state.mode === GameMode.PVE) {
+  if (game && isAiMode(state.mode)) {
     game.difficulty = difficulty;
     if (game.aiSide) {
       game.ai = new AI(game.aiSide, difficulty);
@@ -948,7 +1012,7 @@ function scheduleAiMove() {
     state.screen !== 'game' ||
     state.overlay ||
     state.replay ||
-    state.mode !== GameMode.PVE ||
+    !isAiMode(state.mode) ||
     !game ||
     game.gameResult !== GameResult.PLAYING ||
     !game.sidesAssigned ||
@@ -1040,7 +1104,7 @@ function showSettings() {
 function showAbout() {
   wx.showModal({
     title: '关于军棋',
-    content: `军棋陆战棋 v${VERSION}\n微信小游戏 Canvas 版\n\n支持人机对战、双人同屏、三级 AI 难度和最近 10 局快照复盘。`,
+    content: `军棋陆战棋 v${VERSION}\n微信小游戏 Canvas 版\n\n支持人机对战、随机残局、双人同屏、三级 AI 难度和最近 10 局快照复盘。`,
     showCancel: false,
     confirmText: '确定'
   });
@@ -1068,7 +1132,7 @@ function recordGameResult() {
   saveObject(SNAPSHOTS_STORAGE_KEY, state.snapshots);
   state.stats.totalGames++;
 
-  if (state.mode === GameMode.PVE) {
+  if (isAiMode(state.mode)) {
     const result = state.gameManager.gameResult;
     const playerSide = state.gameManager.playerSide;
     const playerWon =
@@ -1158,6 +1222,7 @@ module.exports = {
     render,
     setDifficulty,
     startReplay,
+    startEndgame,
     changeReplayStep,
     recordGameResult
   }
