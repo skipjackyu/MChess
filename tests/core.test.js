@@ -207,3 +207,55 @@ test('blocked movable pieces are treated as having no legal move', () => {
 
   assert.equal(checkGameResult(boardState, Side.RED, 10, 0, DefaultSettings), GameResult.BLUE_WIN);
 });
+
+test('game snapshots replay board state and discard undone actions', () => {
+  const game = new GameManager();
+  game.reset(GameMode.PVP, Difficulty.EASY, Object.assign({}, DefaultSettings, { flagRule: 'any' }));
+  game.boardState = {
+    [Board.posKey(0, 0)]: Object.assign(createPiece(PieceType.ENGINEER, Side.RED, 1), { revealed: true }),
+    [Board.posKey(4, 0)]: Object.assign(createPiece(PieceType.FLAG, Side.RED, 2), { revealed: true }),
+    [Board.posKey(4, 11)]: Object.assign(createPiece(PieceType.ENGINEER, Side.BLUE, 3), { revealed: true }),
+    [Board.posKey(3, 11)]: Object.assign(createPiece(PieceType.FLAG, Side.BLUE, 4), { revealed: true })
+  };
+  game.currentSide = Side.RED;
+  game.sidesAssigned = true;
+  game.playerSide = Side.RED;
+  game.replayInitialBoard = game._cloneBoardState();
+  game.replayActions = [];
+
+  assert.equal(game.selectPiece(0, 0), true);
+  assert.ok(game.movePiece(0, 0, 1, 0));
+  assert.equal(game.replayActions.length, 1);
+
+  const snapshot = game.exportSnapshot();
+  const replay = new GameManager();
+  assert.equal(replay.loadReplaySnapshot(snapshot, 0), true);
+  assert.ok(replay.boardState[Board.posKey(0, 0)]);
+  assert.equal(replay.boardState[Board.posKey(1, 0)], undefined);
+
+  assert.equal(replay.loadReplaySnapshot(snapshot, 1), true);
+  assert.equal(replay.boardState[Board.posKey(0, 0)], undefined);
+  assert.equal(replay.boardState[Board.posKey(1, 0)].type, PieceType.ENGINEER);
+  assert.equal(replay.totalSteps, 1);
+
+  assert.equal(game.undo(), true);
+  assert.equal(game.replayActions.length, 0);
+});
+
+test('snapshot store keeps only the newest ten valid games', () => {
+  const { appendSnapshot, normalizeSnapshots } = require('../utils/snapshotStore');
+  let snapshots = [];
+  for (let index = 0; index < 12; index++) {
+    snapshots = appendSnapshot(snapshots, {
+      version: 1,
+      completedAt: index,
+      initialBoard: {},
+      actions: []
+    });
+  }
+
+  assert.equal(snapshots.length, 10);
+  assert.equal(snapshots[0].completedAt, 11);
+  assert.equal(snapshots[9].completedAt, 2);
+  assert.deepEqual(normalizeSnapshots([null, { version: 0 }, ...snapshots]), snapshots);
+});

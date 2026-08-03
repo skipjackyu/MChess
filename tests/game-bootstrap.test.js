@@ -66,10 +66,10 @@ test('game.js boots as a Mini Game and responds to canvas touch input', () => {
   assert.equal(typeof handlers.touchEnd, 'function');
 
   const homeIds = gameModule.state.hitAreas.map((area) => area.id);
-  assert.deepEqual(homeIds, ['start:pve', 'start:pvp']);
+  assert.deepEqual(homeIds, ['start:pve', 'start:pvp', 'snapshots:open']);
 
   function tapArea(id) {
-    const area = gameModule.state.hitAreas.find((candidate) => candidate.id === id);
+    const area = [...gameModule.state.hitAreas].reverse().find((candidate) => candidate.id === id);
     assert.ok(area, `missing hit area: ${id}`);
     handlers.touchEnd({
       changedTouches: [{
@@ -78,6 +78,12 @@ test('game.js boots as a Mini Game and responds to canvas touch input', () => {
       }]
     });
   }
+
+  tapArea('snapshots:open');
+  assert.equal(gameModule.state.overlay, 'snapshots');
+  assert.equal(gameModule.state.snapshots.length, 0);
+  tapArea('overlay:close');
+  assert.equal(gameModule.state.overlay, null);
 
   tapArea('start:pve');
   assert.equal(gameModule.state.screen, 'game');
@@ -121,6 +127,12 @@ test('game.js boots as a Mini Game and responds to canvas touch input', () => {
   assert.equal(gameModule.state.gameManager.difficulty, 'hard');
   assert.equal(gameModule.state.gameManager.ai.difficulty, 'hard');
   assert.equal(storage['mchess.difficulty'], 'hard');
+
+  gameModule.state.gameManager.gameResult = 'draw';
+  gameModule.recordGameResult();
+  assert.equal(gameModule.state.snapshots.length, 1);
+  assert.equal(storage['mchess.snapshots'].length, 1);
+  assert.equal(storage['mchess.snapshots'][0].actions.length, 1);
 
   tapBoardButton('menu');
   assert.equal(gameModule.state.overlay, 'menu');

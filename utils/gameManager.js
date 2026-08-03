@@ -51,6 +51,12 @@ class GameManager {
     
     // 历史记录（用于悔棋）
     this.history = [];
+
+    // 对局快照操作日志（用于持久化复盘）
+    this.startedAt = Date.now();
+    this.replayInitialBoard = null;
+    this.replayActions = [];
+    this.isReplay = false;
     
     // 游戏结果
     this.gameResult = GameResult.PLAYING;
@@ -71,6 +77,7 @@ class GameManager {
 
     // 初始化棋盘
     this._initBoard();
+    this.replayInitialBoard = this._cloneBoardState();
     
     // 如果是PVE模式，创建AI
     if (this.mode === GameMode.PVE) {
@@ -159,11 +166,18 @@ class GameManager {
         this.ai = new AI(this.aiSide, this.difficulty);
       }
     }
+    const actingSide = this.currentSide;
     
     // 切换回合
     this.totalSteps++;
     this.noCapSteps++;
     this._switchSide();
+
+    this._recordReplayAction({
+      type: 'flip',
+      at: [col, row],
+      actorSide: actingSide
+    });
     
     // 清除选中
     this.selectedPos = null;
@@ -209,6 +223,7 @@ class GameManager {
     const targetPiece = this.boardState[toKey];
     
     if (!piece || !piece.revealed || piece.side !== this.currentSide) return null;
+    const actingSide = this.currentSide;
     
     // 检查目标位置是否在可达范围内
     const isReachable = this.reachablePositions.some(p => p.col === toCol && p.row === toRow);
@@ -269,6 +284,14 @@ class GameManager {
     if (this.gameResult === GameResult.PLAYING) {
       this._switchSide();
     }
+
+    this._recordReplayAction({
+      type: 'move',
+      from: [fromCol, fromRow],
+      to: [toCol, toRow],
+      actorSide: actingSide,
+      result: result.type === 'capture' ? result.result : 'move'
+    });
     
     return result;
   }
@@ -400,7 +423,8 @@ class GameManager {
       sidesAssigned: this.sidesAssigned,
       playerSide: this.playerSide,
       aiSide: this.aiSide,
-      selectedPos: this.selectedPos ? { ...this.selectedPos } : null
+      selectedPos: this.selectedPos ? { ...this.selectedPos } : null,
+      replayActionCount: this.replayActions.length
     };
     this.history.push(snapshot);
     
@@ -424,6 +448,7 @@ class GameManager {
     this.aiSide = snapshot.aiSide;
     this.selectedPos = null;
     this.reachablePositions = [];
+    this.replayActions.length = snapshot.replayActionCount;
     
     // 重建AI
     if (this.mode === GameMode.PVE && this.aiSide) {
@@ -438,6 +463,111 @@ class GameManager {
     const clone = {};
     for (const key in this.boardState) {
       clone[key] = Object.assign({}, this.boardState[key]);
+    }
+    return clone;
+  }
+
+  _recordReplayAction(action) {
+    this.replayActions.push(Object.assign({}, action, {
+      currentSide: this.currentSide,
+      noCapSteps: this.noCapSteps,
+      gameResult: this.gameResult
+    }));
+  }
+
+  exportSnapshot() {
+    return {
+      version: 1,
+      startedAt: this.startedAt,
+      completedAt: Date.now(),
+      mode: this.mode,
+      difficulty: this.difficulty,
+      settings: Object.assign({}, this.settings),
+      result: this.gameResult,
+      totalSteps: this.totalSteps,
+      playerSide: this.playerSide,
+      aiSide: this.aiSide,
+      initialSide: Side.RED,
+      initialBoard: this._cloneBoard(this.replayInitialBoard),
+      actions: this.replayActions.map(action => Object.assign({}, action, {
+        at: action.at ? [...action.at] : undefined,
+        from: action.from ? [...action.from] : undefined,
+        to: action.to ? [...action.to] : undefined
+      }))
+    };
+  }
+
+  loadReplaySnapshot(snapshot, step) {
+    if (!snapshot || !snapshot.initialBoard || !Array.isArray(snapshot.actions)) {
+      return false;
+    }
+
+    const replayStep = Math.max(0, Math.min(Number(step) || 0, snapshot.actions.length));
+    this.mode = snapshot.mode || GameMode.PVE;
+    this.difficulty = snapshot.difficulty || Difficulty.EASY;
+    this.settings = Object.assign({}, DefaultSettings, snapshot.settings || {});
+    this.boardState = this._cloneBoard(snapshot.initialBoard);
+    this.currentSide = snapshot.initialSide || Side.RED;
+    this.firstSide = null;
+    this.totalSteps = 0;
+    this.noCapSteps = 0;
+    this.history = [];
+    this.gameResult = GameResult.PLAYING;
+    this.ai = null;
+    this.aiSide = null;
+    this.selectedPos = null;
+    this.reachablePositions = [];
+    this.sidesAssigned = false;
+    this.playerSide = null;
+    this.startedAt = snapshot.startedAt || Date.now();
+    this.replayInitialBoard = this._cloneBoard(snapshot.initialBoard);
+    this.replayActions = snapshot.actions.map(action => Object.assign({}, action));
+    this.isReplay = true;
+
+    for (let index = 0; index < replayStep; index++) {
+      this._applyReplayAction(snapshot.actions[index]);
+    }
+
+    if (replayStep > 0) {
+      const frame = snapshot.actions[replayStep - 1];
+      this.currentSide = frame.currentSide;
+      this.noCapSteps = frame.noCapSteps;
+      this.gameResult = frame.gameResult;
+      this.sidesAssigned = true;
+      this.playerSide = snapshot.playerSide;
+      this.aiSide = snapshot.aiSide;
+    }
+    this.totalSteps = replayStep;
+    return true;
+  }
+
+  _applyReplayAction(action) {
+    if (action.type === 'flip' && action.at) {
+      const piece = this.boardState[Board.posKey(action.at[0], action.at[1])];
+      if (piece) piece.revealed = true;
+      return;
+    }
+
+    if (action.type !== 'move' || !action.from || !action.to) return;
+    const fromKey = Board.posKey(action.from[0], action.from[1]);
+    const toKey = Board.posKey(action.to[0], action.to[1]);
+    const piece = this.boardState[fromKey];
+
+    if (action.result === 'draw') {
+      delete this.boardState[fromKey];
+      delete this.boardState[toKey];
+    } else if (action.result === 'lose') {
+      delete this.boardState[fromKey];
+    } else if (piece) {
+      delete this.boardState[fromKey];
+      this.boardState[toKey] = piece;
+    }
+  }
+
+  _cloneBoard(boardState) {
+    const clone = {};
+    for (const key in boardState || {}) {
+      clone[key] = Object.assign({}, boardState[key]);
     }
     return clone;
   }

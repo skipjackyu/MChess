@@ -3,11 +3,13 @@ const { Renderer } = require('./utils/renderer');
 const { GameResult, DefaultSettings } = require('./utils/rules');
 const { Side, SideColor } = require('./utils/pieces');
 const { AI, Difficulty } = require('./utils/ai');
+const { normalizeSnapshots, appendSnapshot } = require('./utils/snapshotStore');
 
 const SETTINGS_STORAGE_KEY = 'mchess.settings';
 const STATS_STORAGE_KEY = 'mchess.stats';
 const DIFFICULTY_STORAGE_KEY = 'mchess.difficulty';
-const VERSION = '1.0.0';
+const SNAPSHOTS_STORAGE_KEY = 'mchess.snapshots';
+const VERSION = '1.1.0';
 
 const COLORS = {
   skyTop: '#9BE0F5',
@@ -64,6 +66,7 @@ const state = {
     losses: 0,
     draws: 0
   }),
+  snapshots: loadSnapshots(),
   gameManager: null,
   renderer: null,
   boardRect: null,
@@ -72,7 +75,9 @@ const state = {
   settingsDraft: null,
   aiTimer: null,
   resultModalOpen: false,
-  resultRecorded: false
+  resultRecorded: false,
+  replay: null,
+  snapshotPage: 0
 };
 
 let metrics = readWindowMetrics();
@@ -128,6 +133,15 @@ function loadDifficulty() {
     console.warn('读取难度设置失败', error);
   }
   return Difficulty.EASY;
+}
+
+function loadSnapshots() {
+  try {
+    return normalizeSnapshots(wx.getStorageSync(SNAPSHOTS_STORAGE_KEY));
+  } catch (error) {
+    console.warn('读取对局快照失败', error);
+    return [];
+  }
 }
 
 function saveObject(key, value) {
@@ -307,6 +321,7 @@ function render() {
 
   if (state.screen === 'home') {
     renderHome();
+    if (state.overlay) renderOverlay();
   } else {
     renderGame();
   }
@@ -333,13 +348,14 @@ function renderHome() {
   drawHomeBoardDecoration(panel);
 
   const buttonWidth = panel.width - 58;
-  const buttonHeight = 74;
-  const gap = 18;
-  const startY = panel.y + (panel.height - buttonHeight * 2 - gap) / 2;
+  const buttonHeight = 64;
+  const gap = 12;
+  const startY = panel.y + (panel.height - buttonHeight * 3 - gap * 2) / 2;
   const x = panel.x + 29;
   const choices = [
     ['start:pve', '人机对战', `当前难度：${difficultyLabel(state.difficulty)} · 对局中可调整`, '#178AC8'],
-    ['start:pvp', '双人同屏', '与好友轮流翻棋走棋', '#D46A13']
+    ['start:pvp', '双人同屏', '与好友轮流翻棋走棋', '#D46A13'],
+    ['snapshots:open', '快照复盘', `回溯最近 ${state.snapshots.length} 局完整对局`, '#2B8F63']
   ];
 
   choices.forEach((choice, index) => {
@@ -350,7 +366,9 @@ function renderHome() {
       height: buttonHeight
     };
     drawButton(rect, choice[1], choice[2], {
-      top: choice[3] === '#178AC8' ? '#57C3F3' : '#F6A345',
+      top: choice[3] === '#178AC8'
+        ? '#57C3F3'
+        : choice[3] === '#D46A13' ? '#F6A345' : '#58B987',
       bottom: choice[3],
       border: 'rgba(255,255,255,0.65)'
     });
@@ -425,10 +443,15 @@ function renderStatusBar(game) {
   drawSideStatus(leftRect, '蓝方', SideColor[Side.RED], activeSide === Side.RED);
   drawSideStatus(rightRect, '橙方', SideColor[Side.BLUE], activeSide === Side.BLUE);
 
-  drawText(game.getStatusText(), metrics.width / 2, y + 13, 13, '#294A58', 'center', 'bold', metrics.width - 160);
-  const centerLabel = state.mode === GameMode.PVE
-    ? `AI ${difficultyLabel(state.difficulty)} · ${game.totalSteps}步`
-    : `双人对战 · 第 ${game.totalSteps} 步`;
+  const statusText = state.replay
+    ? `复盘第 ${state.replay.index}/${state.replay.record.actions.length} 手`
+    : game.getStatusText();
+  drawText(statusText, metrics.width / 2, y + 13, 13, '#294A58', 'center', 'bold', metrics.width - 160);
+  const centerLabel = state.replay
+    ? '点棋盘下一手 · 回退键上一手'
+    : state.mode === GameMode.PVE
+      ? `AI ${difficultyLabel(state.difficulty)} · ${game.totalSteps}步`
+      : `双人对战 · 第 ${game.totalSteps} 步`;
   const pill = { x: metrics.width / 2 - 55, y: y + 23, width: 110, height: 22 };
   drawPill(pill, centerLabel, false);
 }
@@ -451,6 +474,7 @@ function renderOverlay() {
 
   if (state.overlay === 'menu') renderMenuOverlay();
   if (state.overlay === 'settings') renderSettingsOverlay();
+  if (state.overlay === 'snapshots') renderSnapshotsOverlay();
 }
 
 function drawOverlayPanel(rect, title, subtitle) {
@@ -478,7 +502,15 @@ function drawOverlayPanel(rect, title, subtitle) {
 }
 
 function renderMenuOverlay() {
-  const items = state.mode === GameMode.PVE
+  const items = state.replay
+    ? [
+        ['menu:replay-prev', '退', '上一手'],
+        ['menu:replay-next', '进', '下一手'],
+        ['menu:snapshots', '照', '快照列表'],
+        ['menu:home', '首', '返回首页'],
+        ['menu:about', 'i', '软件信息']
+      ]
+    : state.mode === GameMode.PVE
       ? [
         ['menu:restart', '新', '重新开始'],
         ['menu:ai', '走', '电脑走'],
@@ -503,7 +535,10 @@ function renderMenuOverlay() {
     width: metrics.width - 28,
     height: 246
   };
-  drawOverlayPanel(panel, '对局菜单', state.mode === GameMode.PVE ? `AI ${difficultyLabel(state.difficulty)}` : '双人对战');
+  const subtitle = state.replay
+    ? '复盘模式'
+    : state.mode === GameMode.PVE ? `AI ${difficultyLabel(state.difficulty)}` : '双人对战';
+  drawOverlayPanel(panel, '对局菜单', subtitle);
 
   const contentTop = panel.y + 66;
   const cellWidth = (panel.width - 24) / columns;
@@ -528,6 +563,73 @@ function renderMenuOverlay() {
     drawText(item[2], rect.x + rect.width / 2, rect.y + 62, 12, '#FFFFFF', 'center', 'bold');
     registerHitArea(item[0], rect);
   });
+}
+
+function renderSnapshotsOverlay() {
+  const pageSize = 5;
+  const pageCount = Math.max(1, Math.ceil(state.snapshots.length / pageSize));
+  state.snapshotPage = Math.min(state.snapshotPage, pageCount - 1);
+  const panelHeight = Math.min(430, metrics.height - Math.max(metrics.safeArea.top || 0, 20) - 30);
+  const panel = {
+    x: 14,
+    y: Math.max(metrics.safeArea.top || 12, (metrics.height - panelHeight) / 2),
+    width: metrics.width - 28,
+    height: panelHeight
+  };
+  drawOverlayPanel(panel, '快照复盘', `${state.snapshotPage + 1}/${pageCount}`);
+
+  if (state.snapshots.length === 0) {
+    drawText('暂无已完成对局', metrics.width / 2, panel.y + panel.height / 2 - 8, 18, COLORS.text, 'center', 'bold');
+    drawText('完成一局后会自动保留快照', metrics.width / 2, panel.y + panel.height / 2 + 24, 13, COLORS.mutedText, 'center', 'bold');
+    return;
+  }
+
+  const start = state.snapshotPage * pageSize;
+  const visible = state.snapshots.slice(start, start + pageSize);
+  const rowTop = panel.y + 66;
+  const rowHeight = 54;
+  visible.forEach((snapshot, offset) => {
+    const index = start + offset;
+    const rect = {
+      x: panel.x + 14,
+      y: rowTop + offset * 58,
+      width: panel.width - 28,
+      height: rowHeight
+    };
+    drawButton(rect, snapshotTitle(snapshot), snapshotSubtitle(snapshot), {
+      top: offset % 2 === 0 ? '#42A8D8' : '#4EB16A',
+      bottom: offset % 2 === 0 ? '#176E9B' : '#267943',
+      border: 'rgba(255,255,255,0.62)'
+    });
+    registerHitArea(`snapshot:open:${index}`, rect);
+  });
+
+  const navY = panel.y + panel.height - 52;
+  const previousRect = { x: panel.x + 14, y: navY, width: 92, height: 38 };
+  const nextRect = { x: panel.x + panel.width - 106, y: navY, width: 92, height: 38 };
+  drawButton(previousRect, '上一页', null, { top: '#778A84', bottom: '#465650', border: '#AFBDB8' });
+  drawButton(nextRect, '下一页', null, { top: '#778A84', bottom: '#465650', border: '#AFBDB8' });
+  registerHitArea('snapshot:prev', previousRect);
+  registerHitArea('snapshot:next', nextRect);
+}
+
+function snapshotTitle(snapshot) {
+  const date = new Date(snapshot.completedAt || snapshot.startedAt || Date.now());
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  const mode = snapshot.mode === GameMode.PVE ? `人机·${difficultyLabel(snapshot.difficulty)}` : '双人同屏';
+  return `${month}-${day} ${hour}:${minute}  ${mode}`;
+}
+
+function snapshotSubtitle(snapshot) {
+  const result = snapshot.result === GameResult.RED_WIN
+    ? '蓝方胜'
+    : snapshot.result === GameResult.BLUE_WIN
+      ? '橙方胜'
+      : '和棋';
+  return `${result} · ${snapshot.totalSteps || snapshot.actions.length} 手`;
 }
 
 function renderSettingsOverlay() {
@@ -587,6 +689,7 @@ function startGame(mode, difficulty) {
   state.settingsDraft = null;
   state.resultModalOpen = false;
   state.resultRecorded = false;
+  state.replay = null;
   render();
 }
 
@@ -601,6 +704,7 @@ function returnHome() {
   state.overlay = null;
   state.settingsDraft = null;
   state.resultModalOpen = false;
+  state.replay = null;
   render();
 }
 
@@ -615,6 +719,7 @@ function handleTouch(point) {
   if (state.screen === 'home') {
     if (hit === 'start:pve') startGame(GameMode.PVE);
     if (hit === 'start:pvp') startGame(GameMode.PVP);
+    if (hit === 'snapshots:open') openSnapshots();
     return;
   }
 
@@ -635,7 +740,13 @@ function handleTouch(point) {
     return;
   }
   if (boardButton === 'undo') {
-    undoMove();
+    if (state.replay) changeReplayStep(-1);
+    else undoMove();
+    return;
+  }
+
+  if (state.replay) {
+    changeReplayStep(1);
     return;
   }
 
@@ -698,11 +809,32 @@ function handleOverlayHit(hit) {
     return;
   }
 
+  if (hit === 'snapshot:prev') {
+    const pageCount = Math.max(1, Math.ceil(state.snapshots.length / 5));
+    state.snapshotPage = (state.snapshotPage - 1 + pageCount) % pageCount;
+    render();
+    return;
+  }
+  if (hit === 'snapshot:next') {
+    const pageCount = Math.max(1, Math.ceil(state.snapshots.length / 5));
+    state.snapshotPage = (state.snapshotPage + 1) % pageCount;
+    render();
+    return;
+  }
+  if (hit.startsWith('snapshot:open:')) {
+    const index = Number(hit.slice('snapshot:open:'.length));
+    startReplay(index);
+    return;
+  }
+
   if (hit.startsWith('menu:')) {
     const action = hit.slice(5);
     closeOverlay(false);
     if (action === 'restart') restartGame();
     if (action === 'ai') manualAiMove();
+    if (action === 'snapshots') openSnapshots();
+    if (action === 'replay-prev') changeReplayStep(-1);
+    if (action === 'replay-next') changeReplayStep(1);
     if (action === 'home') returnHome();
     if (action === 'rules') showRules();
     if (action === 'settings') showSettings();
@@ -717,6 +849,48 @@ function openOverlay(type) {
   state.settingsDraft = type === 'settings'
     ? Object.assign({ difficulty: state.difficulty }, state.settings)
     : null;
+  render();
+}
+
+function openSnapshots() {
+  clearAiTimer();
+  state.snapshotPage = 0;
+  state.overlay = 'snapshots';
+  state.settingsDraft = null;
+  render();
+}
+
+function startReplay(index) {
+  const record = state.snapshots[index];
+  if (!record) return;
+  clearAiTimer();
+  const game = new GameManager();
+  if (!game.loadReplaySnapshot(record, 0)) {
+    showToast('快照已损坏');
+    return;
+  }
+  state.mode = record.mode || GameMode.PVE;
+  state.gameManager = game;
+  state.screen = 'game';
+  state.overlay = null;
+  state.settingsDraft = null;
+  state.resultModalOpen = false;
+  state.resultRecorded = true;
+  state.replay = { record, index: 0 };
+  render();
+  showToast('点棋盘前进，回退键后退');
+}
+
+function changeReplayStep(delta) {
+  if (!state.replay || !state.gameManager) return;
+  const maxStep = state.replay.record.actions.length;
+  const nextIndex = Math.max(0, Math.min(maxStep, state.replay.index + delta));
+  if (nextIndex === state.replay.index) {
+    showToast(nextIndex === 0 ? '已到开局' : '已到终局');
+    return;
+  }
+  state.replay.index = nextIndex;
+  state.gameManager.loadReplaySnapshot(state.replay.record, nextIndex);
   render();
 }
 
@@ -773,6 +947,7 @@ function scheduleAiMove() {
   if (
     state.screen !== 'game' ||
     state.overlay ||
+    state.replay ||
     state.mode !== GameMode.PVE ||
     !game ||
     game.gameResult !== GameResult.PLAYING ||
@@ -865,7 +1040,7 @@ function showSettings() {
 function showAbout() {
   wx.showModal({
     title: '关于军棋',
-    content: `军棋陆战棋 v${VERSION}\n微信小游戏 Canvas 版\n\n支持人机对战、双人同屏和三级 AI 难度。`,
+    content: `军棋陆战棋 v${VERSION}\n微信小游戏 Canvas 版\n\n支持人机对战、双人同屏、三级 AI 难度和最近 10 局快照复盘。`,
     showCancel: false,
     confirmText: '确定'
   });
@@ -888,6 +1063,9 @@ function showStats() {
 function recordGameResult() {
   if (state.resultRecorded || !state.gameManager) return;
   state.resultRecorded = true;
+  const snapshot = state.gameManager.exportSnapshot();
+  state.snapshots = appendSnapshot(state.snapshots, snapshot);
+  saveObject(SNAPSHOTS_STORAGE_KEY, state.snapshots);
   state.stats.totalGames++;
 
   if (state.mode === GameMode.PVE) {
@@ -978,6 +1156,9 @@ module.exports = {
     state,
     handleTouch,
     render,
-    setDifficulty
+    setDifficulty,
+    startReplay,
+    changeReplayStep,
+    recordGameResult
   }
 };
