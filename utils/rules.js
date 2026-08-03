@@ -27,64 +27,78 @@ const GameResult = {
 const DefaultSettings = {
   drawSteps: 0,         // 0=不限, 70, 100 连续无吃子判和的步数
   hqCapture: true,      // 大本营是否允许吃子
-  mineRule: 'engineer',  // 'engineer'=仅工兵, 'any'=任意棋子
-  flagRule: 'smallest'   // 'smallest'=最小棋子, 'any'=任意棋子
+  mineRule: 'engineer',  // 'engineer'=仅工兵, 'smallest'=当前最小棋子
+  flagRule: 'smallest',  // 'engineer'=仅工兵, 'smallest'=当前最小棋子
+  firstMover: 'human'    // 'human'=玩家先手, 'ai'=电脑先手
 };
+
+function normalizeSettings(settings) {
+  const normalized = Object.assign({}, DefaultSettings, settings || {});
+  normalized.drawSteps = normalized.drawSteps === 70 || normalized.drawSteps === 100
+    ? normalized.drawSteps
+    : 0;
+  normalized.hqCapture = normalized.hqCapture !== false;
+  normalized.mineRule = normalized.mineRule === 'smallest' || normalized.mineRule === 'any'
+    ? 'smallest'
+    : 'engineer';
+  normalized.flagRule = normalized.flagRule === 'engineer' || normalized.flagRule === 'any'
+    ? 'engineer'
+    : 'smallest';
+  normalized.firstMover = normalized.firstMover === 'ai' ? 'ai' : 'human';
+  return normalized;
+}
+
+function isCurrentSmallestPiece(piece, boardState) {
+  const pieceRank = piece && PieceRank[piece.type];
+  if (!piece || !piece.alive || !canMove(piece.type) || pieceRank < PieceRank[PieceType.ENGINEER]) {
+    return false;
+  }
+
+  let smallestRank = pieceRank;
+  for (const key in boardState) {
+    const candidate = boardState[key];
+    if (!candidate || !candidate.alive || candidate.side !== piece.side || !canMove(candidate.type)) continue;
+    const candidateRank = PieceRank[candidate.type];
+    if (candidateRank >= PieceRank[PieceType.ENGINEER]) {
+      smallestRank = Math.min(smallestRank, candidateRank);
+    }
+  }
+  return pieceRank === smallestRank;
+}
 
 /**
  * 判断吃子结果
  * @param {Object} attacker - 攻方棋子
  * @param {Object} defender - 守方棋子
  * @param {Object} settings - 规则配置
- * @param {Object} boardState - 棋盘状态（用于检查地雷是否全部被挖）
+ * @param {Object} boardState - 棋盘状态（用于判断攻方当前最小棋子）
  * @returns {string} CaptureResult
  */
 function judgeCapture(attacker, defender, settings, boardState) {
   if (!attacker || !defender) return CaptureResult.INVALID;
   if (attacker.side === defender.side) return CaptureResult.INVALID;
   
-  settings = settings || DefaultSettings;
-
-  // 炸弹规则: 与任何棋子同归于尽
-  if (attacker.type === PieceType.BOMB) {
-    return CaptureResult.DRAW;
-  }
-  if (defender.type === PieceType.BOMB) {
-    return CaptureResult.DRAW;
-  }
+  settings = normalizeSettings(settings);
 
   // 地雷规则
   if (defender.type === PieceType.MINE) {
     if (settings.mineRule === 'engineer') {
-      // 仅工兵可以挖雷
-      if (attacker.type === PieceType.ENGINEER) {
-        return CaptureResult.WIN;
-      }
-      return CaptureResult.INVALID;
-    } else {
-      // 任意棋子可以碰地雷 (碰地雷同归于尽, 工兵挖雷存活)
-      if (attacker.type === PieceType.ENGINEER) {
-        return CaptureResult.WIN;
-      }
-      return CaptureResult.DRAW;
+      return attacker.type === PieceType.ENGINEER ? CaptureResult.WIN : CaptureResult.INVALID;
     }
+    return isCurrentSmallestPiece(attacker, boardState) ? CaptureResult.WIN : CaptureResult.INVALID;
   }
 
   // 军旗规则
   if (defender.type === PieceType.FLAG) {
-    if (settings.flagRule === 'smallest') {
-      // 检查守方地雷是否全部被挖
-      const defenderMinesAlive = countAliveMines(defender.side, boardState);
-      if (defenderMinesAlive > 0) {
-        // 地雷未挖完，只有工兵可以尝试（但实际上不行，因为要先挖雷）
-        return CaptureResult.INVALID;
-      }
-      // 地雷挖完了，最小棋子(工兵)可以扛旗
-      return CaptureResult.WIN;
-    } else {
-      // 任意棋子可以扛旗
-      return CaptureResult.WIN;
+    if (settings.flagRule === 'engineer') {
+      return attacker.type === PieceType.ENGINEER ? CaptureResult.WIN : CaptureResult.INVALID;
     }
+    return isCurrentSmallestPiece(attacker, boardState) ? CaptureResult.WIN : CaptureResult.INVALID;
+  }
+
+  // 炸弹规则: 与任何普通棋子同归于尽
+  if (attacker.type === PieceType.BOMB || defender.type === PieceType.BOMB) {
+    return CaptureResult.DRAW;
   }
 
   // 攻方是不可移动的棋子（地雷/军旗）不能攻击
@@ -229,6 +243,7 @@ module.exports = {
   CaptureResult,
   GameResult,
   DefaultSettings,
+  normalizeSettings,
   judgeCapture,
   checkGameResult,
   hasMovablePieces,

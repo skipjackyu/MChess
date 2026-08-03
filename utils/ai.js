@@ -41,6 +41,11 @@ class AI {
     }
   }
 
+  getOpeningMove(boardState, settings) {
+    const flips = this._getAllMoves(boardState, settings).filter(move => move.type === 'flip');
+    return this._pickPreferredFlip(flips, boardState, null);
+  }
+
   _getAllMoves(boardState, settings, side) {
     const currentSide = side || this.side;
     const moves = [];
@@ -97,9 +102,11 @@ class AI {
     this._shuffle(candidates);
     const captures = candidates.filter(move => move.type === 'capture');
     const flips = candidates.filter(move => move.type === 'flip');
+    const preferredFlip = this._pickPreferredFlip(flips, boardState, this.side);
 
     if (captures.length > 0 && Math.random() > 0.3) return captures[0];
-    if (flips.length > 0 && Math.random() > 0.2) return flips[0];
+    if (flips.length === candidates.length) return preferredFlip;
+    if (preferredFlip && Math.random() > 0.2) return preferredFlip;
     return candidates[0];
   }
 
@@ -415,20 +422,42 @@ class AI {
     }
 
     if (move.type === 'flip') {
-      const { col, row } = move.to;
-      let score = 400 - Math.abs(col - 2) * 12 - Math.abs(row - 5.5) * 2;
-      if (boardInstance.isOnRail(col, row)) score += 20;
-      for (const link of boardInstance.getAdjacentPositions(col, row)) {
-        const piece = boardState[link.pos];
-        if (!piece || !piece.revealed) continue;
-        score += piece.side === side ? 12 : -8;
-      }
-      return score;
+      return this._flipPositionScore(move.to.col, move.to.row, boardState, side);
     }
 
     const before = this._positionValue(move.from.col, move.from.row, move.piece);
     const after = this._positionValue(move.to.col, move.to.row, move.piece);
     return 100 + after - before;
+  }
+
+  _flipPositionScore(col, row, boardState, side) {
+    let score = 400 - Math.abs(col - 2) * 12 - Math.abs(row - 5.5) * 2;
+    if (boardInstance.isOnRail(col, row)) score += 20;
+
+    for (const link of boardInstance.getAdjacentPositions(col, row)) {
+      const adjacent = Board.parseKey(link.pos);
+      if (boardInstance.isCamp(adjacent.col, adjacent.row)) {
+        score += 90;
+        continue;
+      }
+
+      const piece = boardState[link.pos];
+      if (!piece || !piece.revealed || !side) continue;
+      score += piece.side === side ? 12 : -8;
+    }
+    return score;
+  }
+
+  _pickPreferredFlip(flips, boardState, side) {
+    if (flips.length === 0) return null;
+
+    const ranked = flips.map(move => ({
+      move,
+      score: this._flipPositionScore(move.to.col, move.to.row, boardState, side)
+    })).sort((a, b) => b.score - a.score);
+    const bestScore = ranked[0].score;
+    const preferred = ranked.filter(item => item.score >= bestScore - 8);
+    return preferred[Math.floor(Math.random() * preferred.length)].move;
   }
 
   _evaluateMove(move, boardState, settings) {

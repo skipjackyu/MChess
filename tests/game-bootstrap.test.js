@@ -3,16 +3,18 @@ const assert = require('node:assert/strict');
 
 function createContext() {
   const gradient = { addColorStop() {} };
+  const texts = [];
   return {
+    texts,
     arc() {},
     arcTo() {},
     beginPath() {},
-    clearRect() {},
+    clearRect() { texts.length = 0; },
     closePath() {},
     createLinearGradient() { return gradient; },
     fill() {},
     fillRect() {},
-    fillText() {},
+    fillText(text) { texts.push(text); },
     lineTo() {},
     moveTo() {},
     restore() {},
@@ -25,7 +27,7 @@ function createContext() {
   };
 }
 
-test('game.js boots as a Mini Game and responds to canvas touch input', () => {
+test('game.js boots as a Mini Game and responds to canvas touch input', async () => {
   const context = createContext();
   const canvas = {
     width: 0,
@@ -88,16 +90,39 @@ test('game.js boots as a Mini Game and responds to canvas touch input', () => {
   tapArea('start:pve');
   assert.equal(gameModule.state.screen, 'game');
   assert.equal(gameModule.state.difficulty, 'easy');
+  assert.equal(context.texts.includes('蓝方'), false);
+  assert.equal(context.texts.includes('橙方'), false);
   assert.ok(gameModule.state.boardRect.height > 500);
   assert.ok(gameModule.state.boardRect.y + gameModule.state.boardRect.height <= 633);
   assert.ok(gameModule.state.boardRect.y + gameModule.state.boardRect.height >= 620);
   assert.deepEqual(gameModule.state.hitAreas, []);
 
+  function tapBoardPosition(col, row) {
+    const point = gameModule.state.renderer.boardToCanvas(col, row);
+    handlers.touchEnd({
+      changedTouches: [{
+        clientX: gameModule.state.boardRect.x + point.x,
+        clientY: gameModule.state.boardRect.y + point.y
+      }]
+    });
+  }
+
   const firstPosition = Object.keys(gameModule.state.gameManager.boardState)[0]
     .split(',')
     .map(Number);
-  gameModule.state.gameManager.handleTap(firstPosition[0], firstPosition[1]);
+  tapBoardPosition(firstPosition[0], firstPosition[1]);
   assert.ok(gameModule.state.gameManager.ai);
+  assert.equal(gameModule.state.gameManager.totalSteps, 1);
+
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  assert.equal(gameModule.state.gameManager.totalSteps, 2);
+
+  const nextHiddenPosition = Object.entries(gameModule.state.gameManager.boardState)
+    .find(([, piece]) => !piece.revealed)[0]
+    .split(',')
+    .map(Number);
+  tapBoardPosition(nextHiddenPosition[0], nextHiddenPosition[1]);
+  assert.equal(gameModule.state.gameManager.totalSteps, 3);
 
   function tapBoardButton(name) {
     const area = gameModule.state.renderer[`${name}BtnArea`];
@@ -119,6 +144,15 @@ test('game.js boots as a Mini Game and responds to canvas touch input', () => {
   tapArea('menu:settings');
   assert.equal(gameModule.state.overlay, 'settings');
   assert.ok(gameModule.state.hitAreas.some((area) => area.id === 'settings:difficulty'));
+  assert.equal(gameModule.state.settingsDraft.mineRule, 'engineer');
+  assert.equal(gameModule.state.settingsDraft.flagRule, 'smallest');
+  tapArea('settings:first-mover');
+  tapArea('settings:draw');
+  tapArea('settings:hq');
+  tapArea('settings:mine');
+  tapArea('settings:flag');
+  assert.equal(gameModule.state.settingsDraft.mineRule, 'smallest');
+  assert.equal(gameModule.state.settingsDraft.flagRule, 'engineer');
   tapArea('settings:difficulty');
   tapArea('settings:difficulty');
   tapArea('settings:confirm');
@@ -127,12 +161,40 @@ test('game.js boots as a Mini Game and responds to canvas touch input', () => {
   assert.equal(gameModule.state.gameManager.difficulty, 'hard');
   assert.equal(gameModule.state.gameManager.ai.difficulty, 'hard');
   assert.equal(storage['mchess.difficulty'], 'hard');
+  assert.deepEqual(storage['mchess.settings'], {
+    drawSteps: 70,
+    hqCapture: false,
+    mineRule: 'smallest',
+    flagRule: 'engineer',
+    firstMover: 'ai'
+  });
 
   gameModule.state.gameManager.gameResult = 'draw';
+  const recordedActionCount = gameModule.state.gameManager.replayActions.length;
   gameModule.recordGameResult();
   assert.equal(gameModule.state.snapshots.length, 1);
   assert.equal(storage['mchess.snapshots'].length, 1);
-  assert.equal(storage['mchess.snapshots'][0].actions.length, 1);
+  assert.equal(storage['mchess.snapshots'][0].actions.length, recordedActionCount);
+
+  tapBoardButton('menu');
+  tapArea('menu:restart');
+  assert.deepEqual(gameModule.state.gameManager.settings, storage['mchess.settings']);
+  handlers.hide();
+  assert.equal(gameModule.state.gameManager.totalSteps, 0);
+
+  const interruptedOpeningPosition = Object.keys(gameModule.state.gameManager.boardState)[0]
+    .split(',')
+    .map(Number);
+  tapBoardPosition(interruptedOpeningPosition[0], interruptedOpeningPosition[1]);
+  assert.equal(gameModule.state.gameManager.totalSteps, 1);
+  assert.equal(gameModule.state.gameManager.currentSide, gameModule.state.gameManager.playerSide);
+
+  const playerReplyPosition = Object.entries(gameModule.state.gameManager.boardState)
+    .find(([, piece]) => !piece.revealed)[0]
+    .split(',')
+    .map(Number);
+  tapBoardPosition(playerReplyPosition[0], playerReplyPosition[1]);
+  assert.equal(gameModule.state.gameManager.totalSteps, 2);
 
   tapBoardButton('menu');
   assert.equal(gameModule.state.overlay, 'menu');

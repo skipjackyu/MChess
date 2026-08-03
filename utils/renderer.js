@@ -444,11 +444,6 @@ class Renderer {
       ctx.lineWidth = 2;
       this._roundRect(left, top, w, h, r);
       ctx.stroke();
-      
-      // 未翻开标记（小方块）
-      const markSize = Math.min(w, h) * 0.3;
-      ctx.fillStyle = HiddenColor.shadow;
-      ctx.fillRect(x - markSize / 2, y - markSize / 2, markSize, markSize);
     }
     
     // 选中效果

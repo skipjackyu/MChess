@@ -6,7 +6,7 @@
 const { Board } = require('./board');
 const { Side, generateAllPieces, canMove, PieceType } = require('./pieces');
 const { getReachablePositions, getFlippablePositions } = require('./pathfinder');
-const { judgeCapture, CaptureResult, checkGameResult, GameResult, DefaultSettings, canCaptureInHQ } = require('./rules');
+const { judgeCapture, CaptureResult, checkGameResult, GameResult, normalizeSettings, canCaptureInHQ } = require('./rules');
 const { AI, Difficulty } = require('./ai');
 
 // 游戏模式
@@ -39,7 +39,7 @@ class GameManager {
     this.difficulty = difficulty || Difficulty.EASY;
     
     // 规则设置
-    this.settings = Object.assign({}, DefaultSettings, settings || {});
+    this.settings = normalizeSettings(settings);
     this.random = options && typeof options.random === 'function' ? options.random : Math.random;
     this.scenario = null;
     
@@ -49,7 +49,7 @@ class GameManager {
     // 当前回合方
     this.currentSide = null; // 翻棋模式下，翻第一个棋子后决定
     
-    // 先手方（翻出第一个棋子的阵营对手方）
+    // 先手方
     this.firstSide = null;
     
     // 步数统计
@@ -90,9 +90,8 @@ class GameManager {
     this._initBoard();
     this.replayInitialBoard = this._cloneBoardState();
     
-    // 如果是PVE模式，创建AI
-    if (isAiMode(this.mode)) {
-      // AI的阵营在翻棋后确定
+    if (this.isAiOpeningTurn()) {
+      this.ai = new AI(null, this.difficulty);
     }
   }
 
@@ -151,7 +150,7 @@ class GameManager {
   /**
    * 处理翻棋操作
    */
-  flipPiece(col, row) {
+  flipPiece(col, row, actor) {
     if (this.gameResult !== GameResult.PLAYING) return null;
     
     const key = Board.posKey(col, row);
@@ -168,13 +167,20 @@ class GameManager {
     // 如果是第一次翻棋，确定阵营
     if (!this.sidesAssigned) {
       this.sidesAssigned = true;
-      // 翻出的第一个棋子的颜色 = 先手方
-      this.playerSide = piece.side;
+      this.firstSide = piece.side;
       this.currentSide = piece.side;
-      
+
       if (isAiMode(this.mode)) {
-        this.aiSide = piece.side === Side.RED ? Side.BLUE : Side.RED;
+        if (actor === 'ai') {
+          this.aiSide = piece.side;
+          this.playerSide = this._oppositeSide(piece.side);
+        } else {
+          this.playerSide = piece.side;
+          this.aiSide = this._oppositeSide(piece.side);
+        }
         this.ai = new AI(this.aiSide, this.difficulty);
+      } else {
+        this.playerSide = piece.side;
       }
     }
     const actingSide = this.currentSide;
@@ -313,6 +319,10 @@ class GameManager {
    */
   handleTap(col, row) {
     if (this.gameResult !== GameResult.PLAYING) return { action: 'gameover' };
+
+    if (this.isAiOpeningTurn()) {
+      return { action: 'ai_turn' };
+    }
     
     // PVE模式下，如果是AI的回合，不响应点击
     if (isAiMode(this.mode) && this.sidesAssigned && this.currentSide === this.aiSide) {
@@ -375,8 +385,17 @@ class GameManager {
    * AI走棋
    */
   aiMove() {
-    if (!this.ai || this.currentSide !== this.aiSide) return null;
     if (this.gameResult !== GameResult.PLAYING) return null;
+
+    if (this.isAiOpeningTurn()) {
+      if (!this.ai) this.ai = new AI(null, this.difficulty);
+      const openingMove = this.ai.getOpeningMove(this.boardState, this.settings);
+      return openingMove
+        ? this.flipPiece(openingMove.from.col, openingMove.from.row, 'ai')
+        : null;
+    }
+
+    if (!this.ai || this.currentSide !== this.aiSide) return null;
     
     const move = this.ai.getMove(this.boardState, this.settings, {
       totalSteps: this.totalSteps,
@@ -385,7 +404,7 @@ class GameManager {
     if (!move) return null;
     
     if (move.type === 'flip') {
-      return this.flipPiece(move.from.col, move.from.row);
+      return this.flipPiece(move.from.col, move.from.row, 'ai');
     } else {
       // 先选中再移动
       this.selectPiece(move.from.col, move.from.row);
@@ -461,10 +480,27 @@ class GameManager {
     this.reachablePositions = [];
     this.replayActions.length = snapshot.replayActionCount;
     
-    // 重建AI
-    if (isAiMode(this.mode) && this.aiSide) {
-      this.ai = new AI(this.aiSide, this.difficulty);
-    }
+    this.ai = this.aiSide
+      ? new AI(this.aiSide, this.difficulty)
+      : this.isAiOpeningTurn()
+        ? new AI(null, this.difficulty)
+        : null;
+  }
+
+  isAiOpeningTurn() {
+    return this.mode === GameMode.PVE && !this.sidesAssigned && this.settings.firstMover === 'ai';
+  }
+
+  isAiTurn() {
+    return this.isAiOpeningTurn() || (
+      isAiMode(this.mode) &&
+      this.sidesAssigned &&
+      this.currentSide === this.aiSide
+    );
+  }
+
+  _oppositeSide(side) {
+    return side === Side.RED ? Side.BLUE : Side.RED;
   }
 
   /**
@@ -521,7 +557,7 @@ class GameManager {
 
     this.mode = GameMode.ENDGAME;
     this.difficulty = scenario.difficulty || Difficulty.EASY;
-    this.settings = Object.assign({}, DefaultSettings, scenario.settings || {});
+    this.settings = normalizeSettings(scenario.settings);
     this.boardState = this._cloneBoard(scenario.boardState);
     this.currentSide = scenario.currentSide;
     this.firstSide = scenario.playerSide;
@@ -561,7 +597,7 @@ class GameManager {
     const replayStep = Math.max(0, Math.min(Number(step) || 0, snapshot.actions.length));
     this.mode = snapshot.mode || GameMode.PVE;
     this.difficulty = snapshot.difficulty || Difficulty.EASY;
-    this.settings = Object.assign({}, DefaultSettings, snapshot.settings || {});
+    this.settings = normalizeSettings(snapshot.settings);
     this.boardState = this._cloneBoard(snapshot.initialBoard);
     this.currentSide = snapshot.initialSide || Side.RED;
     this.firstSide = null;

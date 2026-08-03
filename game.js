@@ -1,7 +1,7 @@
 const { GameManager, GameMode, isAiMode } = require('./utils/gameManager');
 const { Renderer } = require('./utils/renderer');
-const { GameResult, DefaultSettings } = require('./utils/rules');
-const { Side, SideColor } = require('./utils/pieces');
+const { GameResult, DefaultSettings, normalizeSettings } = require('./utils/rules');
+const { Side } = require('./utils/pieces');
 const { AI, Difficulty } = require('./utils/ai');
 const { normalizeSnapshots, appendSnapshot } = require('./utils/snapshotStore');
 const { createEndgameSeed, generateEndgame } = require('./utils/endgameGenerator');
@@ -10,7 +10,7 @@ const SETTINGS_STORAGE_KEY = 'mchess.settings';
 const STATS_STORAGE_KEY = 'mchess.stats';
 const DIFFICULTY_STORAGE_KEY = 'mchess.difficulty';
 const SNAPSHOTS_STORAGE_KEY = 'mchess.snapshots';
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 
 const COLORS = {
   skyTop: '#9BE0F5',
@@ -45,7 +45,7 @@ const RULE_PAGES = [
   },
   {
     title: '吃子规则',
-    content: '司令 > 军长 > 师长 > 旅长 > 团长 > 营长 > 连长 > 排长 > 工兵。\n\n炸弹与任何棋子相遇时同归于尽。默认只有工兵可以挖地雷；军旗规则可在设置中调整。'
+    content: '司令 > 军长 > 师长 > 旅长 > 团长 > 营长 > 连长 > 排长 > 工兵。\n\n炸弹与普通棋子相遇时同归于尽。排雷和扛旗可分别设置为仅工兵或当前最小棋子；默认仅工兵排雷、当前最小棋子扛旗。'
   },
   {
     title: '胜负判定',
@@ -60,7 +60,7 @@ const state = {
   screen: 'home',
   mode: GameMode.PVE,
   difficulty: loadDifficulty(),
-  settings: loadObject(SETTINGS_STORAGE_KEY, DefaultSettings),
+  settings: normalizeSettings(loadObject(SETTINGS_STORAGE_KEY, DefaultSettings)),
   stats: loadObject(STATS_STORAGE_KEY, {
     totalGames: 0,
     wins: 0,
@@ -196,6 +196,18 @@ function roundedRect(context, x, y, width, height, radius) {
   context.arcTo(x, y + height, x, y + height - r, r);
   context.lineTo(x, y + r);
   context.arcTo(x, y, x + r, y, r);
+  context.closePath();
+}
+
+function topRoundedRect(context, x, y, width, height, radius) {
+  const r = Math.min(radius, width / 2, height);
+  context.beginPath();
+  context.moveTo(x, y + height);
+  context.lineTo(x, y + r);
+  context.arcTo(x, y, x + r, y, r);
+  context.lineTo(x + width - r, y);
+  context.arcTo(x + width, y, x + width, y + r, r);
+  context.lineTo(x + width, y + height);
   context.closePath();
 }
 
@@ -382,7 +394,7 @@ function renderHome() {
   });
 
   drawText(
-    `v${VERSION} · 难度可在功能设置中调整`,
+    `v${VERSION}`,
     metrics.width / 2,
     metrics.height - 24 - bottomInset,
     12,
@@ -440,19 +452,16 @@ function renderGame() {
 
 function renderStatusBar(game) {
   const y = state.boardRect.y - 50;
-  const height = 42;
-  const sideWidth = 70;
-  const activeSide = game.sidesAssigned ? game.currentSide : null;
 
-  const leftRect = { x: 6, y, width: sideWidth, height };
-  const rightRect = { x: metrics.width - sideWidth - 6, y, width: sideWidth, height };
-  drawSideStatus(leftRect, '蓝方', SideColor[Side.RED], activeSide === Side.RED);
-  drawSideStatus(rightRect, '橙方', SideColor[Side.BLUE], activeSide === Side.BLUE);
+  const statusText = getStatusBarText(game);
+  if (statusText) {
+    drawText(statusText, metrics.width / 2, y + 13, 13, '#294A58', 'center', 'bold', metrics.width - 80);
+  }
 
-  const statusText = state.replay
-    ? `复盘第 ${state.replay.index}/${state.replay.record.actions.length} 手`
-    : game.getStatusText();
-  drawText(statusText, metrics.width / 2, y + 13, 13, '#294A58', 'center', 'bold', metrics.width - 160);
+  if (!state.replay && state.mode === GameMode.PVP && game.sidesAssigned) {
+    drawCurrentSideIndicator(game.currentSide, y + 13);
+  }
+
   const centerLabel = state.replay
     ? '点棋盘下一手 · 回退键上一手'
     : state.mode === GameMode.ENDGAME
@@ -464,14 +473,40 @@ function renderStatusBar(game) {
   drawPill(pill, centerLabel, false);
 }
 
-function drawSideStatus(rect, label, colors, active) {
-  ctx.fillStyle = active ? colors.bg : 'rgba(255,255,255,0.42)';
-  roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, 12);
+function getStatusBarText(game) {
+  if (state.replay) {
+    return `复盘第 ${state.replay.index}/${state.replay.record.actions.length} 手`;
+  }
+  if (game.gameResult !== GameResult.PLAYING || !game.sidesAssigned) {
+    return game.getStatusText();
+  }
+  if (isAiMode(state.mode)) {
+    return game.isAiTurn() ? 'AI思考中...' : '轮到你走棋';
+  }
+  return '';
+}
+
+function drawCurrentSideIndicator(side, y) {
+  const colors = side === Side.RED
+    ? { bg: '#1565C0', border: '#0D47A1' }
+    : side === Side.BLUE
+      ? { bg: '#D32F2F', border: '#9A0007' }
+      : null;
+  if (!colors) return;
+
+  const x = metrics.width - 20;
+  ctx.fillStyle = 'rgba(255,255,255,0.76)';
+  ctx.beginPath();
+  ctx.arc(x, y, 9, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = active ? '#FFF2A8' : colors.border;
-  ctx.lineWidth = active ? 2.5 : 1;
+
+  ctx.fillStyle = colors.bg;
+  ctx.beginPath();
+  ctx.arc(x, y, 6, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = colors.border;
+  ctx.lineWidth = 1;
   ctx.stroke();
-  drawText(label, rect.x + rect.width / 2, rect.y + rect.height / 2, 14, '#FFFFFF', 'center', 'bold');
 }
 
 function renderOverlay() {
@@ -494,11 +529,9 @@ function drawOverlayPanel(rect, title, subtitle) {
   ctx.stroke();
   registerHitArea('overlay:block', rect);
 
-  const header = ctx.createLinearGradient(rect.x, rect.y, rect.x, rect.y + 54);
-  header.addColorStop(0, 'rgba(255,255,255,0.96)');
-  header.addColorStop(1, 'rgba(220,232,226,0.78)');
-  ctx.fillStyle = header;
-  ctx.fillRect(rect.x + 2, rect.y + 2, rect.width - 4, 52);
+  ctx.fillStyle = '#EAF1ED';
+  topRoundedRect(ctx, rect.x + 2, rect.y + 2, rect.width - 4, 52, 6);
+  ctx.fill();
   drawText(title, rect.x + 22, rect.y + 28, 21, '#263B34', 'left', 'bold');
   if (subtitle) {
     drawText(subtitle, rect.x + rect.width - 38, rect.y + 29, 11, '#597169', 'right', 'bold');
@@ -647,7 +680,9 @@ function snapshotSubtitle(snapshot) {
 function renderSettingsOverlay() {
   const draft = state.settingsDraft || Object.assign({}, state.settings);
   const includeDifficulty = isAiMode(state.mode);
-  const panelHeight = includeDifficulty ? 492 : 430;
+  const includeFirstMover = state.mode === GameMode.PVE;
+  const rowCount = 4 + (includeDifficulty ? 1 : 0) + (includeFirstMover ? 1 : 0);
+  const panelHeight = 182 + rowCount * 62;
   const panel = {
     x: 16,
     y: Math.max(62, (metrics.height - panelHeight) / 2),
@@ -660,11 +695,14 @@ function renderSettingsOverlay() {
   if (includeDifficulty) {
     rows.push(['settings:difficulty', 'AI难度', difficultyLabel(draft.difficulty)]);
   }
+  if (includeFirstMover) {
+    rows.push(['settings:first-mover', '先手', draft.firstMover === 'ai' ? '电脑先手' : '玩家先手']);
+  }
   rows.push(
     ['settings:draw', '和棋', draft.drawSteps ? `${draft.drawSteps} 步` : '不限步数'],
     ['settings:hq', '大本营', draft.hqCapture ? '允许吃子' : '禁止吃子'],
-    ['settings:mine', '吃地雷', draft.mineRule === 'engineer' ? '仅工兵' : '任意棋子'],
-    ['settings:flag', '吃军旗', draft.flagRule === 'smallest' ? '清雷后可扛' : '任意棋子']
+    ['settings:mine', '吃地雷', draft.mineRule === 'engineer' ? '仅工兵' : '最小棋子'],
+    ['settings:flag', '吃军旗', draft.flagRule === 'engineer' ? '仅工兵' : '最小棋子']
   );
 
   rows.forEach((row, index) => {
@@ -705,6 +743,7 @@ function startGame(mode, difficulty) {
   state.endgameSeed = null;
   state.endgameScenario = null;
   render();
+  scheduleAiMove();
 }
 
 function startEndgame(seed, existingScenario) {
@@ -835,6 +874,11 @@ function handleOverlayHit(hit) {
     render();
     return;
   }
+  if (hit === 'settings:first-mover') {
+    state.settingsDraft.firstMover = state.settingsDraft.firstMover === 'ai' ? 'human' : 'ai';
+    render();
+    return;
+  }
   if (hit === 'settings:draw') {
     const options = [0, 70, 100];
     const index = options.indexOf(state.settingsDraft.drawSteps);
@@ -848,22 +892,22 @@ function handleOverlayHit(hit) {
     return;
   }
   if (hit === 'settings:mine') {
-    state.settingsDraft.mineRule = state.settingsDraft.mineRule === 'engineer' ? 'any' : 'engineer';
+    state.settingsDraft.mineRule = state.settingsDraft.mineRule === 'engineer' ? 'smallest' : 'engineer';
     render();
     return;
   }
   if (hit === 'settings:flag') {
-    state.settingsDraft.flagRule = state.settingsDraft.flagRule === 'smallest' ? 'any' : 'smallest';
+    state.settingsDraft.flagRule = state.settingsDraft.flagRule === 'engineer' ? 'smallest' : 'engineer';
     render();
     return;
   }
   if (hit === 'settings:confirm') {
     const nextDifficulty = state.settingsDraft.difficulty;
     delete state.settingsDraft.difficulty;
-    state.settings = Object.assign({}, state.settingsDraft);
+    state.settings = normalizeSettings(state.settingsDraft);
     saveObject(SETTINGS_STORAGE_KEY, state.settings);
     if (state.gameManager) {
-      state.gameManager.settings = Object.assign({}, state.settings);
+      state.gameManager.settings = normalizeSettings(state.settings);
     }
     if (nextDifficulty) setDifficulty(nextDifficulty);
     closeOverlay(false);
@@ -989,6 +1033,11 @@ function handleActionResult(result) {
     showGameResult();
     return;
   }
+  if (result.action === 'ai_turn') {
+    clearAiTimer();
+    performAiMove();
+    return;
+  }
   if (result.action === 'flipped' || result.action === 'moved') {
     if (state.gameManager.gameResult !== GameResult.PLAYING) {
       showGameResult();
@@ -1015,8 +1064,7 @@ function scheduleAiMove() {
     !isAiMode(state.mode) ||
     !game ||
     game.gameResult !== GameResult.PLAYING ||
-    !game.sidesAssigned ||
-    game.currentSide !== game.aiSide
+    !game.isAiTurn()
   ) {
     return;
   }
@@ -1024,17 +1072,33 @@ function scheduleAiMove() {
   render();
   state.aiTimer = setTimeout(() => {
     state.aiTimer = null;
-    if (state.screen !== 'game' || !state.gameManager) return;
-    const result = state.gameManager.aiMove();
-    render();
-    if (!result) {
-      showToast('电脑暂无可用走法');
-      return;
-    }
-    if (state.gameManager.gameResult !== GameResult.PLAYING) {
-      showGameResult();
-    }
+    performAiMove();
   }, 650);
+}
+
+function performAiMove() {
+  const game = state.gameManager;
+  if (
+    state.screen !== 'game' ||
+    state.overlay ||
+    state.replay ||
+    !game ||
+    game.gameResult !== GameResult.PLAYING ||
+    !game.isAiTurn()
+  ) {
+    return false;
+  }
+
+  const result = game.aiMove();
+  render();
+  if (!result) {
+    showToast('电脑暂无可用走法');
+    return false;
+  }
+  if (game.gameResult !== GameResult.PLAYING) {
+    showGameResult();
+  }
+  return true;
 }
 
 function undoMove() {

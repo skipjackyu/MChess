@@ -16,6 +16,7 @@ const {
   CaptureResult,
   GameResult,
   DefaultSettings,
+  normalizeSettings,
   judgeCapture,
   checkGameResult
 } = require('../utils/rules');
@@ -96,21 +97,103 @@ test('first flip assigns player and AI sides, and undo restores setup', () => {
   assert.equal(game.totalSteps, 0);
 });
 
-test('capture rules preserve bomb, mine, and flag behavior', () => {
-  const engineer = createPiece(PieceType.ENGINEER, Side.RED, 1);
-  const general = createPiece(PieceType.GENERAL, Side.RED, 2);
-  const mine = createPiece(PieceType.MINE, Side.BLUE, 3);
-  const bomb = createPiece(PieceType.BOMB, Side.BLUE, 4);
-  const flag = createPiece(PieceType.FLAG, Side.BLUE, 5);
+test('computer can take the opening flip and receives the revealed side', () => {
+  const game = new GameManager();
+  game.reset(GameMode.PVE, Difficulty.EASY, Object.assign({}, DefaultSettings, { firstMover: 'ai' }));
 
-  assert.equal(judgeCapture(engineer, mine, DefaultSettings, {}), CaptureResult.WIN);
-  assert.equal(judgeCapture(general, mine, DefaultSettings, {}), CaptureResult.INVALID);
-  assert.equal(judgeCapture(general, bomb, DefaultSettings, {}), CaptureResult.DRAW);
-  assert.equal(
-    judgeCapture(engineer, flag, DefaultSettings, { mine }),
-    CaptureResult.INVALID
-  );
-  assert.equal(judgeCapture(engineer, flag, DefaultSettings, {}), CaptureResult.WIN);
+  assert.equal(game.isAiOpeningTurn(), true);
+  const result = game.aiMove();
+
+  assert.equal(result.type, 'flip');
+  assert.equal(game.sidesAssigned, true);
+  assert.equal(game.aiSide, result.piece.side);
+  assert.equal(game.playerSide, result.piece.side === Side.RED ? Side.BLUE : Side.RED);
+  assert.equal(game.currentSide, game.playerSide);
+  assert.equal(game.totalSteps, 1);
+});
+
+test('computer-first setting can take effect before the first flip', () => {
+  const game = new GameManager();
+  game.reset(GameMode.PVE, Difficulty.EASY, DefaultSettings);
+  game.settings.firstMover = 'ai';
+
+  assert.equal(game.ai, null);
+  assert.ok(game.aiMove());
+  assert.ok(game.ai);
+  assert.equal(game.sidesAssigned, true);
+});
+
+test('AI prioritizes hidden pieces beside camps during flip-only openings', () => {
+  const game = new GameManager();
+  game.reset(GameMode.PVE, Difficulty.EASY, DefaultSettings);
+  const ai = new AI(Side.RED, Difficulty.EASY);
+  const move = ai.getMove(game.boardState, DefaultSettings);
+  const besideCamp = boardInstance.getAdjacentPositions(move.to.col, move.to.row).some(link => {
+    const position = Board.parseKey(link.pos);
+    return boardInstance.isCamp(position.col, position.row);
+  });
+
+  assert.equal(move.type, 'flip');
+  assert.equal(besideCamp, true);
+});
+
+test('mine and flag rules support engineer-only and current-smallest pieces independently', () => {
+  const engineer = createPiece(PieceType.ENGINEER, Side.RED, 1);
+  const platoon = createPiece(PieceType.PLATOON, Side.RED, 2);
+  const general = createPiece(PieceType.GENERAL, Side.RED, 3);
+  const bomb = createPiece(PieceType.BOMB, Side.RED, 4);
+  const mine = createPiece(PieceType.MINE, Side.BLUE, 5);
+  const enemyBomb = createPiece(PieceType.BOMB, Side.BLUE, 6);
+  const flag = createPiece(PieceType.FLAG, Side.BLUE, 7);
+  const withEngineer = { engineer, platoon, general };
+  const withoutEngineer = { platoon, general };
+  const smallestRules = Object.assign({}, DefaultSettings, { mineRule: 'smallest', flagRule: 'smallest' });
+  const engineerRules = Object.assign({}, DefaultSettings, { mineRule: 'engineer', flagRule: 'engineer' });
+
+  assert.equal(judgeCapture(engineer, mine, engineerRules, withEngineer), CaptureResult.WIN);
+  assert.equal(judgeCapture(platoon, mine, engineerRules, withoutEngineer), CaptureResult.INVALID);
+  assert.equal(judgeCapture(engineer, flag, engineerRules, withEngineer), CaptureResult.WIN);
+  assert.equal(judgeCapture(platoon, flag, engineerRules, withoutEngineer), CaptureResult.INVALID);
+
+  assert.equal(judgeCapture(engineer, mine, smallestRules, withEngineer), CaptureResult.WIN);
+  assert.equal(judgeCapture(platoon, mine, smallestRules, withEngineer), CaptureResult.INVALID);
+  assert.equal(judgeCapture(platoon, mine, smallestRules, withoutEngineer), CaptureResult.WIN);
+  assert.equal(judgeCapture(general, mine, smallestRules, withoutEngineer), CaptureResult.INVALID);
+  assert.equal(judgeCapture(platoon, flag, smallestRules, withoutEngineer), CaptureResult.WIN);
+  assert.equal(judgeCapture(general, flag, smallestRules, withoutEngineer), CaptureResult.INVALID);
+  assert.equal(judgeCapture(bomb, mine, smallestRules, { bomb }), CaptureResult.INVALID);
+  assert.equal(judgeCapture(general, enemyBomb, DefaultSettings, {}), CaptureResult.DRAW);
+});
+
+test('legacy unrestricted settings migrate to the replacement rule choices', () => {
+  const settings = normalizeSettings({ mineRule: 'any', flagRule: 'any' });
+
+  assert.equal(settings.mineRule, 'smallest');
+  assert.equal(settings.flagRule, 'engineer');
+});
+
+test('stored settings normalize every configurable value', () => {
+  assert.deepEqual(normalizeSettings({
+    drawSteps: 70,
+    hqCapture: false,
+    mineRule: 'smallest',
+    flagRule: 'engineer',
+    firstMover: 'ai'
+  }), {
+    drawSteps: 70,
+    hqCapture: false,
+    mineRule: 'smallest',
+    flagRule: 'engineer',
+    firstMover: 'ai'
+  });
+
+  assert.deepEqual(normalizeSettings({
+    drawSteps: 12,
+    hqCapture: 'false',
+    mineRule: 'invalid',
+    flagRule: 'invalid',
+    firstMover: 'invalid'
+  }), DefaultSettings);
 });
 
 test('renderer converts every node between board and canvas coordinates', () => {
@@ -171,7 +254,7 @@ test('renderer uses piece shadows without top highlight bars', () => {
   fillSnapshots.length = 0;
   renderer._drawSinglePiece(100, 100, createPiece(PieceType.GENERAL, Side.RED, 101), false);
   assert.equal(fillSnapshots.length, 1);
-  assert.equal(fillRects.length, 1);
+  assert.equal(fillRects.length, 0);
 });
 
 test('hard AI takes an immediately available flag', () => {
@@ -182,7 +265,7 @@ test('hard AI takes an immediately available flag', () => {
     [Board.posKey(4, 10)]: Object.assign(createPiece(PieceType.ENGINEER, Side.BLUE, 4), { revealed: true })
   };
   const ai = new AI(Side.RED, Difficulty.HARD);
-  const move = ai.getMove(boardState, Object.assign({}, DefaultSettings, { flagRule: 'any' }));
+  const move = ai.getMove(boardState, Object.assign({}, DefaultSettings, { flagRule: 'smallest' }));
 
   assert.equal(move.type, 'capture');
   assert.deepEqual(move.from, { col: 0, row: 0 });
@@ -272,7 +355,7 @@ test('blocked movable pieces are treated as having no legal move', () => {
 
 test('game snapshots replay board state and discard undone actions', () => {
   const game = new GameManager();
-  game.reset(GameMode.PVP, Difficulty.EASY, Object.assign({}, DefaultSettings, { flagRule: 'any' }));
+  game.reset(GameMode.PVP, Difficulty.EASY, Object.assign({}, DefaultSettings, { flagRule: 'smallest' }));
   game.boardState = {
     [Board.posKey(0, 0)]: Object.assign(createPiece(PieceType.ENGINEER, Side.RED, 1), { revealed: true }),
     [Board.posKey(4, 0)]: Object.assign(createPiece(PieceType.FLAG, Side.RED, 2), { revealed: true }),

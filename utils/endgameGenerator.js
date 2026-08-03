@@ -1,7 +1,7 @@
 const { AI, Difficulty } = require('./ai');
 const { GameManager, GameMode } = require('./gameManager');
 const { PieceType, PieceValue, Side, canMove } = require('./pieces');
-const { CaptureResult, DefaultSettings, GameResult, checkGameResult, isFlagAlive } = require('./rules');
+const { CaptureResult, GameResult, normalizeSettings, checkGameResult, isFlagAlive } = require('./rules');
 
 const GENERATOR_VERSION = 1;
 const MAX_ATTEMPTS = 12;
@@ -188,7 +188,7 @@ function generateEndgame(options) {
   const difficulty = options && DifficultyProfile[options.difficulty]
     ? options.difficulty
     : Difficulty.MEDIUM;
-  const settings = Object.assign({}, DefaultSettings, options && options.settings || {});
+  const settings = normalizeSettings(options && options.settings);
   const seed = options && options.seed ? String(options.seed) : createEndgameSeed();
   const profile = DifficultyProfile[difficulty];
   let bestCandidate = null;
