@@ -1,0 +1,13 @@
+{
+  "libVersion": "3.17.0",
+  "projectname": "MChess",
+  "condition": {},
+  "setting": {
+    "urlCheck": false,
+    "useApiHook": true,
+    "useStaticServer": false,
+    "useLanDebug": false,
+    "compileHotReLoad": true,
+    "bigPackageSizeSupport": false
+  }
+}
