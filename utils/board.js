@@ -123,25 +123,25 @@ class Board {
   /**
    * 初始化铁路位置
    * 铁路线分布:
-   * - 行0: 横向铁路 (col 0~4)
+   * - 行1: 横向铁路 (col 0~4)
    * - 行5: 横向铁路 (col 0~4) - 上方底部
    * - 行6: 横向铁路 (col 0~4) - 下方顶部
-   * - 行11: 横向铁路 (col 0~4)
-   * - col 0: 纵向铁路 (row 0~5, row 6~11)
-   * - col 4: 纵向铁路 (row 0~5, row 6~11)
+   * - 行10: 横向铁路 (col 0~4)
+   * - col 0: 纵向铁路 (row 1~10)
+   * - col 4: 纵向铁路 (row 1~10)
    * - col 2: 中间纵向铁路连接 (row 5~6 跨河)
    */
   _initRailPositions() {
-    // 横向铁路: 行 0, 5, 6, 11
+    // 横向铁路: 行 1, 5, 6, 10
     for (let col = 0; col < 5; col++) {
-      this.railPositions.add(Board.posKey(col, 0));
+      this.railPositions.add(Board.posKey(col, 1));
       this.railPositions.add(Board.posKey(col, 5));
       this.railPositions.add(Board.posKey(col, 6));
-      this.railPositions.add(Board.posKey(col, 11));
+      this.railPositions.add(Board.posKey(col, 10));
     }
     
     // 纵向铁路: col 0 和 col 4
-    for (let row = 0; row <= 11; row++) {
+    for (let row = 1; row <= 10; row++) {
       this.railPositions.add(Board.posKey(0, row));
       this.railPositions.add(Board.posKey(4, row));
     }
@@ -173,9 +173,9 @@ class Board {
   _buildConnections() {
     // === 铁路连接 ===
     
-    // 横向铁路: 行0
+    // 横向铁路: 行1
     for (let col = 0; col < 4; col++) {
-      this._addLink(col, 0, col + 1, 0, LinkType.RAIL);
+      this._addLink(col, 1, col + 1, 1, LinkType.RAIL);
     }
     // 横向铁路: 行5
     for (let col = 0; col < 4; col++) {
@@ -185,23 +185,23 @@ class Board {
     for (let col = 0; col < 4; col++) {
       this._addLink(col, 6, col + 1, 6, LinkType.RAIL);
     }
-    // 横向铁路: 行11
+    // 横向铁路: 行10
     for (let col = 0; col < 4; col++) {
-      this._addLink(col, 11, col + 1, 11, LinkType.RAIL);
+      this._addLink(col, 10, col + 1, 10, LinkType.RAIL);
     }
     
-    // 纵向铁路: col 0 (row 0~5 上方, row 6~11 下方)
-    for (let row = 0; row < 5; row++) {
+    // 纵向铁路: col 0 (row 1~5 上方, row 6~10 下方)
+    for (let row = 1; row < 5; row++) {
       this._addLink(0, row, 0, row + 1, LinkType.RAIL);
     }
-    for (let row = 6; row < 11; row++) {
+    for (let row = 6; row < 10; row++) {
       this._addLink(0, row, 0, row + 1, LinkType.RAIL);
     }
     // 纵向铁路: col 4
-    for (let row = 0; row < 5; row++) {
+    for (let row = 1; row < 5; row++) {
       this._addLink(4, row, 4, row + 1, LinkType.RAIL);
     }
-    for (let row = 6; row < 11; row++) {
+    for (let row = 6; row < 10; row++) {
       this._addLink(4, row, 4, row + 1, LinkType.RAIL);
     }
     
@@ -217,11 +217,6 @@ class Board {
     
     // 下方阵营内部公路，从河界向下构建
     this._buildZoneRoads(6, 1);
-    
-    // 跨河公路连接 (行5到行6)
-    // 左右铁路已连，中间铁路已连，补充公路连接
-    this._addLink(1, 5, 1, 6, LinkType.ROAD);
-    this._addLink(3, 5, 3, 6, LinkType.ROAD);
   }
 
   /**
@@ -260,10 +255,14 @@ class Board {
     for (let c = 0; c < 4; c++) {
       this._addLink(c, r3, c + 1, r3, LinkType.ROAD);
     }
-    // 行r4: col 0-1, 1-2, 2-3, 3-4
+    // 大本营所在行是横向公路
     for (let c = 0; c < 4; c++) {
-      this._addLink(c, r4, c + 1, r4, LinkType.ROAD);
+      this._addLink(c, r5, c + 1, r5, LinkType.ROAD);
     }
+
+    // 大本营行与铁路行之间的左右边线是公路
+    this._addLink(0, r5, 0, r4, LinkType.ROAD);
+    this._addLink(4, r5, 4, r4, LinkType.ROAD);
 
     // --- 行营斜线连接 ---
     // 上方行营斜线 (以r1行的行营为中心)
@@ -299,14 +298,9 @@ class Board {
     this._addLink(3, r3, 4, r4, LinkType.ROAD);
 
     // --- 大本营连接 ---
-    // 大本营 (1,r5) 连接到 (0,r4), (1,r4), (2,r4)
-    this._addLink(1, r5, 0, r4, LinkType.ROAD);
+    // 大本营只与正前方节点连接
     this._addLink(1, r5, 1, r4, LinkType.ROAD);
-    this._addLink(1, r5, 2, r4, LinkType.ROAD);
-    // 大本营 (3,r5) 连接到 (2,r4), (3,r4), (4,r4)
-    this._addLink(3, r5, 2, r4, LinkType.ROAD);
     this._addLink(3, r5, 3, r4, LinkType.ROAD);
-    this._addLink(3, r5, 4, r4, LinkType.ROAD);
   }
 
   /**

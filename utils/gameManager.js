@@ -221,9 +221,20 @@ class GameManager {
     }
     
     if (!canMove(piece.type)) return false;
-    
+
     this.selectedPos = { col, row };
-    this.reachablePositions = getReachablePositions(col, row, piece, this.boardState, this.settings);
+    this.reachablePositions = getReachablePositions(
+      col,
+      row,
+      piece,
+      this.boardState,
+      this.settings
+    ).filter(target => {
+      const targetPiece = this.boardState[Board.posKey(target.col, target.row)];
+      if (!targetPiece) return true;
+      const captureResult = judgeCapture(piece, targetPiece, this.settings, this.boardState);
+      return captureResult !== CaptureResult.INVALID && captureResult !== CaptureResult.LOSE;
+    });
     
     return true;
   }
@@ -260,6 +271,10 @@ class GameManager {
       
       // 吃子
       const captureResult = judgeCapture(piece, targetPiece, this.settings, this.boardState);
+      if (captureResult === CaptureResult.INVALID || captureResult === CaptureResult.LOSE) {
+        this.history.pop();
+        return null;
+      }
       
       if (captureResult === CaptureResult.WIN) {
         // 攻方胜
@@ -271,10 +286,6 @@ class GameManager {
         delete this.boardState[fromKey];
         delete this.boardState[toKey];
         result = { type: 'capture', result: 'draw', attacker: piece, defender: targetPiece };
-      } else if (captureResult === CaptureResult.LOSE) {
-        // 攻方败（这种情况不应该到这里，前端应该已过滤）
-        delete this.boardState[fromKey];
-        result = { type: 'capture', result: 'lose', attacker: piece, defender: targetPiece };
       } else {
         this.history.pop();
         return null;

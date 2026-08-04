@@ -82,6 +82,9 @@ function judgeCapture(attacker, defender, settings, boardState) {
 
   // 地雷规则
   if (defender.type === PieceType.MINE) {
+    if (attacker.type === PieceType.BOMB) {
+      return CaptureResult.DRAW;
+    }
     if (settings.mineRule === 'engineer') {
       return attacker.type === PieceType.ENGINEER ? CaptureResult.WIN : CaptureResult.INVALID;
     }

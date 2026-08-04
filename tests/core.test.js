@@ -137,6 +137,196 @@ test('AI prioritizes hidden pieces beside camps during flip-only openings', () =
   assert.equal(besideCamp, true);
 });
 
+test('hard AI flips beside its occupied camp before an empty camp', () => {
+  const boardState = {
+    [Board.posKey(1, 2)]: Object.assign(createPiece(PieceType.MINE, Side.RED, 1), { revealed: true }),
+    [Board.posKey(0, 1)]: createPiece(PieceType.FLAG, Side.RED, 2),
+    [Board.posKey(4, 4)]: createPiece(PieceType.FLAG, Side.BLUE, 3)
+  };
+  const ai = new AI(Side.RED, Difficulty.HARD);
+  const move = ai.getMove(boardState, DefaultSettings);
+
+  assert.equal(move.type, 'flip');
+  assert.deepEqual(move.to, { col: 0, row: 1 });
+});
+
+test('hard AI avoids revealing an enemy route into another empty camp', () => {
+  const boardState = {
+    [Board.posKey(1, 2)]: Object.assign(createPiece(PieceType.MINE, Side.RED, 1), { revealed: true }),
+    [Board.posKey(0, 1)]: createPiece(PieceType.FLAG, Side.RED, 2),
+    [Board.posKey(2, 2)]: createPiece(PieceType.FLAG, Side.BLUE, 3)
+  };
+  const ai = new AI(Side.RED, Difficulty.HARD);
+  const safeFlip = { type: 'flip', from: { col: 0, row: 1 }, to: { col: 0, row: 1 } };
+  const exposedFlip = { type: 'flip', from: { col: 2, row: 2 }, to: { col: 2, row: 2 } };
+
+  assert.deepEqual(ai._campAdjacency(0, 1, boardState, Side.RED), {
+    own: 1,
+    empty: 0,
+    opponent: 0
+  });
+  assert.deepEqual(ai._campAdjacency(2, 2, boardState, Side.RED), {
+    own: 1,
+    empty: 2,
+    opponent: 0
+  });
+  assert.ok(
+    ai._moveOrderScore(safeFlip, boardState, DefaultSettings, Side.RED) >
+      ai._moveOrderScore(exposedFlip, boardState, DefaultSettings, Side.RED)
+  );
+  assert.deepEqual(ai.getMove(boardState, DefaultSettings).to, { col: 0, row: 1 });
+});
+
+test('hard AI falls back to normal flip scoring when no safe occupied-camp flip exists', () => {
+  const occupiedCampState = {
+    [Board.posKey(1, 2)]: Object.assign(createPiece(PieceType.MINE, Side.RED, 1), { revealed: true }),
+    [Board.posKey(2, 2)]: createPiece(PieceType.FLAG, Side.BLUE, 2)
+  };
+  const emptyCampState = {
+    [Board.posKey(2, 2)]: createPiece(PieceType.FLAG, Side.BLUE, 2)
+  };
+  const ai = new AI(Side.RED, Difficulty.HARD);
+  const exposedFlip = { type: 'flip', from: { col: 2, row: 2 }, to: { col: 2, row: 2 } };
+
+  assert.deepEqual(ai._campAdjacency(2, 2, occupiedCampState, Side.RED), {
+    own: 1,
+    empty: 2,
+    opponent: 0
+  });
+  assert.equal(ai._hardStrategyBonus(exposedFlip, occupiedCampState, Side.RED), 0);
+  assert.equal(
+    ai._moveOrderScore(exposedFlip, occupiedCampState, DefaultSettings, Side.RED),
+    ai._moveOrderScore(exposedFlip, emptyCampState, DefaultSettings, Side.RED)
+  );
+});
+
+test('hard AI gives entering an empty camp a strong safety bonus', () => {
+  const boardState = {
+    [Board.posKey(1, 1)]: Object.assign(createPiece(PieceType.PLATOON, Side.RED, 1), { revealed: true }),
+    [Board.posKey(1, 0)]: Object.assign(createPiece(PieceType.FLAG, Side.RED, 2), { revealed: true }),
+    [Board.posKey(0, 1)]: Object.assign(createPiece(PieceType.MINE, Side.RED, 3), { revealed: true }),
+    [Board.posKey(3, 11)]: Object.assign(createPiece(PieceType.FLAG, Side.BLUE, 4), { revealed: true })
+  };
+  const ai = new AI(Side.RED, Difficulty.HARD);
+  const moves = ai._getAllMoves(boardState, DefaultSettings);
+  const campMove = moves.find(move => move.type === 'move' && move.to.col === 1 && move.to.row === 2);
+  const normalMove = moves.find(move => move.type === 'move' && move.to.col === 2 && move.to.row === 1);
+
+  assert.ok(campMove);
+  assert.ok(normalMove);
+  assert.ok(
+    ai._moveOrderScore(campMove, boardState, DefaultSettings, Side.RED) >=
+      ai._moveOrderScore(normalMove, boardState, DefaultSettings, Side.RED) + 15
+  );
+  assert.deepEqual(ai.getMove(boardState, DefaultSettings).to, { col: 1, row: 2 });
+});
+
+test('medium AI occupies a camp before flipping another hidden piece', () => {
+  const boardState = {
+    [Board.posKey(1, 1)]: Object.assign(createPiece(PieceType.PLATOON, Side.RED, 1), { revealed: true }),
+    [Board.posKey(1, 0)]: Object.assign(createPiece(PieceType.FLAG, Side.RED, 2), { revealed: true }),
+    [Board.posKey(3, 11)]: Object.assign(createPiece(PieceType.FLAG, Side.BLUE, 3), { revealed: true }),
+    [Board.posKey(4, 4)]: createPiece(PieceType.GENERAL, Side.BLUE, 4)
+  };
+  const ai = new AI(Side.RED, Difficulty.MEDIUM);
+  const originalRandom = Math.random;
+  Math.random = () => 0.99;
+
+  try {
+    const move = ai.getMove(boardState, DefaultSettings);
+    assert.equal(move.type, 'move');
+    assert.deepEqual(move.to, { col: 1, row: 2 });
+  } finally {
+    Math.random = originalRandom;
+  }
+});
+
+test('easy AI also occupies a camp before flipping another hidden piece', () => {
+  const boardState = {
+    [Board.posKey(1, 1)]: Object.assign(createPiece(PieceType.PLATOON, Side.RED, 1), { revealed: true }),
+    [Board.posKey(1, 0)]: Object.assign(createPiece(PieceType.FLAG, Side.RED, 2), { revealed: true }),
+    [Board.posKey(3, 11)]: Object.assign(createPiece(PieceType.FLAG, Side.BLUE, 3), { revealed: true }),
+    [Board.posKey(4, 4)]: createPiece(PieceType.GENERAL, Side.BLUE, 4)
+  };
+  const ai = new AI(Side.RED, Difficulty.EASY);
+  const originalRandom = Math.random;
+  Math.random = () => 0.99;
+
+  try {
+    const move = ai.getMove(boardState, DefaultSettings);
+    assert.equal(move.type, 'move');
+    assert.equal(boardInstance.isCamp(move.to.col, move.to.row), true);
+  } finally {
+    Math.random = originalRandom;
+  }
+});
+
+test('hard AI occupies a camp that creates a safe adjacent flip', () => {
+  const boardState = {
+    [Board.posKey(1, 1)]: Object.assign(createPiece(PieceType.PLATOON, Side.RED, 1), { revealed: true }),
+    [Board.posKey(1, 0)]: Object.assign(createPiece(PieceType.FLAG, Side.RED, 2), { revealed: true }),
+    [Board.posKey(3, 11)]: Object.assign(createPiece(PieceType.FLAG, Side.BLUE, 3), { revealed: true }),
+    [Board.posKey(0, 1)]: createPiece(PieceType.GENERAL, Side.BLUE, 4)
+  };
+  const ai = new AI(Side.RED, Difficulty.HARD);
+  const move = ai.getMove(boardState, DefaultSettings);
+
+  assert.equal(move.type, 'move');
+  assert.deepEqual(move.to, { col: 1, row: 2 });
+  assert.equal(ai._campSetupPotential(move, boardState, Side.RED), 1);
+});
+
+test('medium AI protects a threatened piece before occupying a camp with another piece', () => {
+  const boardState = {
+    [Board.posKey(2, 2)]: Object.assign(createPiece(PieceType.PLATOON, Side.RED, 1), { revealed: true }),
+    [Board.posKey(4, 4)]: Object.assign(createPiece(PieceType.COMPANY, Side.RED, 2), { revealed: true }),
+    [Board.posKey(1, 0)]: Object.assign(createPiece(PieceType.FLAG, Side.RED, 3), { revealed: true }),
+    [Board.posKey(2, 1)]: Object.assign(createPiece(PieceType.GENERAL, Side.BLUE, 4), { revealed: true }),
+    [Board.posKey(3, 11)]: Object.assign(createPiece(PieceType.FLAG, Side.BLUE, 5), { revealed: true })
+  };
+  const ai = new AI(Side.RED, Difficulty.MEDIUM);
+  const move = ai.getMove(boardState, DefaultSettings);
+
+  assert.equal(move.type, 'move');
+  assert.deepEqual(move.from, { col: 2, row: 2 });
+  assert.equal(boardInstance.isCamp(move.to.col, move.to.row), true);
+  assert.equal(ai._threatenedPieceScore(boardState, DefaultSettings, Side.RED), 15);
+  assert.equal(
+    ai._threatenedPieceScore(ai._simulateMove(boardState, move), DefaultSettings, Side.RED),
+    0
+  );
+});
+
+test('AI excludes losing engineer captures from legal moves', () => {
+  const boardState = {
+    [Board.posKey(4, 9)]: Object.assign(createPiece(PieceType.ENGINEER, Side.BLUE, 1), { revealed: true }),
+    [Board.posKey(4, 10)]: Object.assign(createPiece(PieceType.REGIMENT, Side.RED, 2), { revealed: true }),
+    [Board.posKey(3, 9)]: Object.assign(createPiece(PieceType.PLATOON, Side.BLUE, 3), { revealed: true }),
+    [Board.posKey(4, 8)]: createPiece(PieceType.GENERAL, Side.RED, 4),
+    [Board.posKey(1, 0)]: Object.assign(createPiece(PieceType.FLAG, Side.RED, 5), { revealed: true }),
+    [Board.posKey(1, 11)]: Object.assign(createPiece(PieceType.FLAG, Side.BLUE, 6), { revealed: true }),
+    [Board.posKey(0, 0)]: createPiece(PieceType.DIVISION, Side.BLUE, 7)
+  };
+
+  for (const difficulty of [Difficulty.MEDIUM, Difficulty.HARD]) {
+    const ai = new AI(Side.BLUE, difficulty);
+    const losingCapture = ai._getAllMoves(boardState, DefaultSettings).find(move =>
+      move.type === 'capture' &&
+      move.piece.type === PieceType.ENGINEER &&
+      move.to.col === 4 &&
+      move.to.row === 10
+    );
+
+    assert.equal(losingCapture, undefined);
+    const move = ai.getMove(boardState, DefaultSettings, { totalSteps: 18, noCapSteps: 5 });
+    assert.ok(move);
+    assert.notDeepEqual(
+      { from: move.from, to: move.to },
+      { from: { col: 4, row: 9 }, to: { col: 4, row: 10 } }
+    );
+  }
+});
+
 test('mine and flag rules support engineer-only and current-smallest pieces independently', () => {
   const engineer = createPiece(PieceType.ENGINEER, Side.RED, 1);
   const platoon = createPiece(PieceType.PLATOON, Side.RED, 2);
@@ -145,6 +335,7 @@ test('mine and flag rules support engineer-only and current-smallest pieces inde
   const mine = createPiece(PieceType.MINE, Side.BLUE, 5);
   const enemyBomb = createPiece(PieceType.BOMB, Side.BLUE, 6);
   const flag = createPiece(PieceType.FLAG, Side.BLUE, 7);
+  const enemyGeneral = createPiece(PieceType.GENERAL, Side.BLUE, 8);
   const withEngineer = { engineer, platoon, general };
   const withoutEngineer = { platoon, general };
   const smallestRules = Object.assign({}, DefaultSettings, { mineRule: 'smallest', flagRule: 'smallest' });
@@ -161,8 +352,37 @@ test('mine and flag rules support engineer-only and current-smallest pieces inde
   assert.equal(judgeCapture(general, mine, smallestRules, withoutEngineer), CaptureResult.INVALID);
   assert.equal(judgeCapture(platoon, flag, smallestRules, withoutEngineer), CaptureResult.WIN);
   assert.equal(judgeCapture(general, flag, smallestRules, withoutEngineer), CaptureResult.INVALID);
-  assert.equal(judgeCapture(bomb, mine, smallestRules, { bomb }), CaptureResult.INVALID);
+  assert.equal(judgeCapture(bomb, mine, smallestRules, { bomb }), CaptureResult.DRAW);
+  assert.equal(judgeCapture(bomb, mine, engineerRules, { bomb }), CaptureResult.DRAW);
+  assert.equal(judgeCapture(bomb, enemyGeneral, DefaultSettings, { bomb, enemyGeneral }), CaptureResult.DRAW);
+  assert.equal(judgeCapture(bomb, flag, DefaultSettings, { bomb, flag }), CaptureResult.INVALID);
   assert.equal(judgeCapture(general, enemyBomb, DefaultSettings, {}), CaptureResult.DRAW);
+});
+
+test('smaller pieces cannot select or execute a losing capture', () => {
+  const game = new GameManager();
+  game.reset(GameMode.PVP, Difficulty.EASY, DefaultSettings);
+  const engineerKey = Board.posKey(4, 9);
+  const regimentKey = Board.posKey(4, 10);
+  game.boardState = {
+    [engineerKey]: Object.assign(createPiece(PieceType.ENGINEER, Side.BLUE, 1), { revealed: true }),
+    [regimentKey]: Object.assign(createPiece(PieceType.REGIMENT, Side.RED, 2), { revealed: true })
+  };
+  game.currentSide = Side.BLUE;
+  game.sidesAssigned = true;
+
+  assert.equal(game.selectPiece(4, 9), true);
+  assert.equal(
+    game.reachablePositions.some(position => position.col === 4 && position.row === 10),
+    false
+  );
+
+  game.reachablePositions = [{ col: 4, row: 10 }];
+  assert.equal(game.movePiece(4, 9, 4, 10), null);
+  assert.equal(game.boardState[engineerKey].type, PieceType.ENGINEER);
+  assert.equal(game.boardState[regimentKey].type, PieceType.REGIMENT);
+  assert.equal(game.totalSteps, 0);
+  assert.equal(game.currentSide, Side.BLUE);
 });
 
 test('legacy unrestricted settings migrate to the replacement rule choices', () => {
@@ -273,7 +493,7 @@ test('hard AI takes an immediately available flag', () => {
   assert.ok(ai.lastSearchStats.completedDepth >= 1);
 });
 
-test('hard AI search keeps legal losing captures for sacrifice analysis', () => {
+test('hard AI search excludes losing captures', () => {
   const boardState = {
     [Board.posKey(0, 0)]: Object.assign(createPiece(PieceType.PLATOON, Side.RED, 1), { revealed: true }),
     [Board.posKey(1, 0)]: Object.assign(createPiece(PieceType.COMMANDER, Side.BLUE, 2), { revealed: true }),
@@ -284,11 +504,7 @@ test('hard AI search keeps legal losing captures for sacrifice analysis', () => 
   const moves = ai._getAllMoves(boardState, DefaultSettings);
   const sacrifice = moves.find(move => move.type === 'capture' && move.to.col === 1 && move.to.row === 0);
 
-  assert.ok(sacrifice);
-  assert.equal(sacrifice.captureResult, CaptureResult.LOSE);
-  const nextState = ai._simulateMove(boardState, sacrifice);
-  assert.equal(nextState[Board.posKey(0, 0)], undefined);
-  assert.equal(nextState[Board.posKey(1, 0)].type, PieceType.COMMANDER);
+  assert.equal(sacrifice, undefined);
 });
 
 test('hard AI does not depend on hidden piece locations', () => {
@@ -323,6 +539,96 @@ test('hard AI does not depend on hidden piece locations', () => {
     { type: secondMove.type, from: secondMove.from, to: secondMove.to }
   );
   assert.deepEqual(firstOutcomes, secondOutcomes);
+});
+
+test('hard AI chance nodes use exact remaining-piece probabilities', () => {
+  const boardState = {
+    [Board.posKey(0, 0)]: createPiece(PieceType.ENGINEER, Side.RED, 1),
+    [Board.posKey(1, 0)]: createPiece(PieceType.ENGINEER, Side.RED, 2),
+    [Board.posKey(2, 0)]: createPiece(PieceType.BOMB, Side.BLUE, 3)
+  };
+  const ai = new AI(Side.RED, Difficulty.HARD);
+  const flipMove = { type: 'flip', from: { col: 0, row: 0 }, to: { col: 0, row: 0 } };
+  const outcomes = ai._getFlipOutcomes(boardState, flipMove);
+
+  assert.deepEqual(
+    outcomes.map(outcome => ({
+      piece: `${outcome.side}:${outcome.type}`,
+      count: outcome.count,
+      probability: outcome.probability
+    })),
+    [
+      { piece: `${Side.BLUE}:${PieceType.BOMB}`, count: 1, probability: 1 / 3 },
+      { piece: `${Side.RED}:${PieceType.ENGINEER}`, count: 2, probability: 2 / 3 }
+    ]
+  );
+  assert.equal(
+    outcomes.reduce((total, outcome) => total + outcome.probability, 0),
+    1
+  );
+});
+
+test('hard AI flip search computes a probability-weighted expectation', () => {
+  const boardState = {
+    [Board.posKey(0, 0)]: createPiece(PieceType.ENGINEER, Side.RED, 1),
+    [Board.posKey(1, 0)]: createPiece(PieceType.ENGINEER, Side.RED, 2),
+    [Board.posKey(2, 0)]: createPiece(PieceType.BOMB, Side.BLUE, 3)
+  };
+  const ai = new AI(Side.RED, Difficulty.HARD);
+  const flipMove = { type: 'flip', from: { col: 0, row: 0 }, to: { col: 0, row: 0 } };
+  ai._alphaBeta = (state) => {
+    const revealed = state[Board.posKey(0, 0)];
+    return revealed.type === PieceType.ENGINEER ? 30 : -60;
+  };
+
+  const score = ai._searchMove(
+    boardState,
+    flipMove,
+    0,
+    -Infinity,
+    Infinity,
+    Side.BLUE,
+    DefaultSettings,
+    {},
+    new Map(),
+    { totalSteps: 1, noCapSteps: 1 }
+  );
+
+  assert.equal(score, 0);
+});
+
+test('hard AI caches exact chance-node expectations', () => {
+  const boardState = {
+    [Board.posKey(0, 0)]: createPiece(PieceType.ENGINEER, Side.RED, 1),
+    [Board.posKey(1, 0)]: createPiece(PieceType.ENGINEER, Side.RED, 2),
+    [Board.posKey(2, 0)]: createPiece(PieceType.BOMB, Side.BLUE, 3)
+  };
+  const ai = new AI(Side.RED, Difficulty.HARD);
+  const flipMove = { type: 'flip', from: { col: 0, row: 0 }, to: { col: 0, row: 0 } };
+  const context = {};
+  const table = new Map();
+  let evaluations = 0;
+  ai._alphaBeta = (state) => {
+    evaluations++;
+    const revealed = state[Board.posKey(0, 0)];
+    return revealed.type === PieceType.ENGINEER ? 30 : -60;
+  };
+
+  const args = [
+    boardState,
+    flipMove,
+    1,
+    Side.BLUE,
+    DefaultSettings,
+    context,
+    table,
+    { totalSteps: 1, noCapSteps: 1 }
+  ];
+  assert.equal(ai._chanceNode(...args), 0);
+  assert.equal(ai._chanceNode(...args), 0);
+  assert.equal(evaluations, 2);
+  assert.equal(context.chanceNodes, 2);
+  assert.equal(context.chanceTableHits, 1);
 });
 
 test('hard AI search tracks configured draw counters', () => {

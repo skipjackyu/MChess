@@ -17,9 +17,15 @@ const Difficulty = {
 const WIN_SCORE = 100000;
 const HARD_NODE_BUDGET = 60000;
 const HARD_BRANCH_LIMIT = 14;
-const HARD_ROOT_LIMIT = 12;
+const HARD_ROOT_LIMIT = 14;
 const HARD_TIME_BUDGET_MS = 700;
-const FLIP_OUTCOME_SAMPLES = 4;
+const CAMP_POSITION_BONUS = 36;
+const HARD_CAMP_MOVE_BONUS = 220;
+const HARD_CAMP_SETUP_BONUS = 40;
+const HARD_SAFE_OWN_CAMP_FLIP_BONUS = 120;
+const HARD_CAMP_LEAVE_PENALTY = 140;
+const PROTECTION_BONUS_SCALE = 3;
+const FLAG_EXPOSURE_PENALTY = 80;
 
 class AI {
   constructor(side, difficulty) {
@@ -81,7 +87,10 @@ class AI {
 
         if (targetPiece) {
           move.captureResult = judgeCapture(piece, targetPiece, settings, boardState);
-          if (move.captureResult === CaptureResult.INVALID) continue;
+          if (
+            move.captureResult === CaptureResult.INVALID ||
+            move.captureResult === CaptureResult.LOSE
+          ) continue;
         }
 
         moves.push(move);
@@ -101,10 +110,19 @@ class AI {
     const candidates = safeMoves.length > 0 ? safeMoves : moves;
     this._shuffle(candidates);
     const captures = candidates.filter(move => move.type === 'capture');
+    const campMoves = candidates.filter(move =>
+      move.type === 'move' &&
+      boardInstance.isCamp(move.to.col, move.to.row) &&
+      !boardInstance.isCamp(move.from.col, move.from.row)
+    ).sort((a, b) =>
+      this._campSetupPotential(b, boardState, this.side) -
+      this._campSetupPotential(a, boardState, this.side)
+    );
     const flips = candidates.filter(move => move.type === 'flip');
     const preferredFlip = this._pickPreferredFlip(flips, boardState, this.side);
 
     if (captures.length > 0 && Math.random() > 0.3) return captures[0];
+    if (campMoves.length > 0) return campMoves[0];
     if (flips.length === candidates.length) return preferredFlip;
     if (preferredFlip && Math.random() > 0.2) return preferredFlip;
     return candidates[0];
@@ -113,34 +131,48 @@ class AI {
   _mediumMove(boardState, settings) {
     const moves = this._getAllMoves(boardState, settings);
     if (moves.length === 0) return null;
+    const threatenedScore = this._threatenedPieceScore(boardState, settings, this.side);
 
     for (const move of moves) {
-      move.score = this._evaluateMove(move, boardState, settings);
+      move.score = this._evaluateMove(move, boardState, settings) +
+        this._hardStrategyBonus(move, boardState, this.side, settings, threatenedScore);
     }
 
     moves.sort((a, b) => b.score - a.score);
-    return moves[Math.floor(Math.random() * Math.min(3, moves.length))];
+    const bestScore = moves[0].score;
+    const preferred = moves.filter(move => move.score >= bestScore - 2);
+    return preferred[Math.floor(Math.random() * preferred.length)];
   }
 
   _hardMove(boardState, settings, searchState) {
+    const allMoves = this._getAllMoves(boardState, settings);
+    const threatenedScore = this._threatenedPieceScore(boardState, settings, this.side);
+    const strategyBonuses = new Map(allMoves.map(move => [
+      move,
+      this._hardStrategyBonus(move, boardState, this.side, settings, threatenedScore)
+    ]));
     const rootMoves = this._selectRootMoves(this._orderMoves(
-      this._getAllMoves(boardState, settings),
+      allMoves,
       boardState,
       settings,
-      this.side
+      this.side,
+      strategyBonuses
     ));
     if (rootMoves.length === 0) return null;
 
     const hiddenCount = getFlippablePositions(boardState).length;
-    const targetDepth = hiddenCount > 40 ? 2 : hiddenCount > 24 ? 3 : 4;
+    const targetDepth = hiddenCount > 40 ? 2 : hiddenCount > 24 ? 3 : hiddenCount > 10 ? 4 : 5;
     const context = {
       nodes: 0,
       maxNodes: HARD_NODE_BUDGET,
       deadline: Date.now() + HARD_TIME_BUDGET_MS,
       aborted: false,
-      tableHits: 0
+      tableHits: 0,
+      chanceNodes: 0,
+      chanceTableHits: 0
     };
     const rootSearchState = Object.assign({ totalSteps: 0, noCapSteps: 0 }, searchState);
+    const table = new Map();
     let bestMove = rootMoves[0];
     let completedDepth = 0;
 
@@ -149,7 +181,6 @@ class AI {
       let completed = true;
 
       try {
-        const table = new Map();
         for (let index = 0; index < rootMoves.length; index++) {
           totals[index] = this._searchMove(
             boardState,
@@ -162,7 +193,7 @@ class AI {
             context,
             table,
             this._nextSearchState(rootSearchState, rootMoves[index])
-          );
+          ) + strategyBonuses.get(rootMoves[index]);
         }
       } catch (error) {
         if (!error || error.code !== 'AI_NODE_BUDGET') throw error;
@@ -183,8 +214,12 @@ class AI {
       nodes: context.nodes,
       completedDepth,
       targetDepth,
-      sampleCount: hiddenCount > 0 ? this._flipSampleCount(hiddenCount) : 0,
+      sampleCount: hiddenCount > 0 ? this._getHiddenPieceGroups(boardState).length : 0,
+      exactChance: true,
       tableHits: context.tableHits,
+      chanceNodes: context.chanceNodes,
+      chanceTableHits: context.chanceTableHits,
+      tableSize: table.size,
       hiddenCount,
       aborted: context.aborted
     };
@@ -206,13 +241,35 @@ class AI {
       );
     }
 
-    const outcomes = this._sampleFlipOutcomes(boardState, move);
+    return this._chanceNode(
+      boardState,
+      move,
+      depth,
+      nextSide,
+      settings,
+      context,
+      table,
+      searchState
+    );
+  }
+
+  _chanceNode(boardState, move, depth, nextSide, settings, context, table, searchState) {
+    context.chanceNodes = (context.chanceNodes || 0) + 1;
+    const key = `chance|${nextSide}|${depth}|${searchState.totalSteps}|${searchState.noCapSteps}|` +
+      `${move.from.col},${move.from.row}|${this._stateKey(boardState)}`;
+    const cached = table.get(key);
+    if (cached && cached.flag === 'exact') {
+      context.chanceTableHits = (context.chanceTableHits || 0) + 1;
+      return cached.score;
+    }
+
+    const outcomes = this._getFlipOutcomes(boardState, move);
     if (outcomes.length === 0) return this._evaluateBoard(boardState, settings);
 
-    let total = 0;
-    for (const outcomeState of outcomes) {
-      total += this._alphaBeta(
-        outcomeState,
+    let expectedScore = 0;
+    for (const outcome of outcomes) {
+      expectedScore += outcome.probability * this._alphaBeta(
+        outcome.state,
         depth,
         -Infinity,
         Infinity,
@@ -223,7 +280,8 @@ class AI {
         searchState
       );
     }
-    return total / outcomes.length;
+    table.set(key, { score: expectedScore, flag: 'exact' });
+    return expectedScore;
   }
 
   _alphaBeta(boardState, depth, alpha, beta, sideToMove, settings, context, table, searchState) {
@@ -363,12 +421,13 @@ class AI {
     return won ? WIN_SCORE + depth : -WIN_SCORE - depth;
   }
 
-  _orderMoves(moves, boardState, settings, side) {
+  _orderMoves(moves, boardState, settings, side, strategyBonuses) {
     return moves
       .map((move, index) => ({
         move,
         index,
-        score: this._moveOrderScore(move, boardState, settings, side)
+        score: this._moveOrderScore(move, boardState, settings, side) +
+          (strategyBonuses ? strategyBonuses.get(move) || 0 : 0)
       }))
       .sort((a, b) => b.score - a.score || a.index - b.index)
       .map(item => item.move);
@@ -402,10 +461,13 @@ class AI {
 
     const tactical = orderedMoves.filter(move => move.type === 'capture').slice(0, 6);
     const quiet = orderedMoves.filter(move => move.type === 'move').slice(0, 4);
-    const flips = orderedMoves.filter(move => move.type === 'flip').slice(0, 2);
+    const regularMoveCount = tactical.length + quiet.length;
+    const flipLimit = regularMoveCount === 0 ? 8 : 4;
+    const rootLimit = regularMoveCount === 0 ? flipLimit : HARD_ROOT_LIMIT;
+    const flips = orderedMoves.filter(move => move.type === 'flip').slice(0, flipLimit);
     const selected = new Set([...tactical, ...quiet, ...flips]);
     for (const move of orderedMoves) {
-      if (selected.size >= HARD_ROOT_LIMIT) break;
+      if (selected.size >= rootLimit) break;
       selected.add(move);
     }
     return orderedMoves.filter(move => selected.has(move));
@@ -434,18 +496,111 @@ class AI {
     let score = 400 - Math.abs(col - 2) * 12 - Math.abs(row - 5.5) * 2;
     if (boardInstance.isOnRail(col, row)) score += 20;
 
+    const campAdjacency = this._campAdjacency(col, row, boardState, side);
+    const adjacentCampCount = campAdjacency.own + campAdjacency.empty + campAdjacency.opponent;
+    score += adjacentCampCount * 90;
+    if (campAdjacency.own > 0 && campAdjacency.empty === 0) {
+      score += 320 + campAdjacency.own * 40;
+    }
+
     for (const link of boardInstance.getAdjacentPositions(col, row)) {
       const adjacent = Board.parseKey(link.pos);
-      if (boardInstance.isCamp(adjacent.col, adjacent.row)) {
-        score += 90;
-        continue;
-      }
+      if (boardInstance.isCamp(adjacent.col, adjacent.row)) continue;
 
       const piece = boardState[link.pos];
       if (!piece || !piece.revealed || !side) continue;
       score += piece.side === side ? 12 : -8;
     }
     return score;
+  }
+
+  _campAdjacency(col, row, boardState, side) {
+    const counts = { own: 0, empty: 0, opponent: 0 };
+
+    for (const link of boardInstance.getAdjacentPositions(col, row)) {
+      const adjacent = Board.parseKey(link.pos);
+      if (!boardInstance.isCamp(adjacent.col, adjacent.row)) continue;
+
+      const occupant = boardState[link.pos];
+      if (!occupant) {
+        counts.empty++;
+      } else if (occupant.revealed && side) {
+        counts[occupant.side === side ? 'own' : 'opponent']++;
+      }
+    }
+    return counts;
+  }
+
+  _hardStrategyBonus(move, boardState, side, settings, threatenedScore) {
+    if (move.type === 'flip') {
+      const campAdjacency = this._campAdjacency(move.to.col, move.to.row, boardState, side);
+      return campAdjacency.own > 0 && campAdjacency.empty === 0
+        ? HARD_SAFE_OWN_CAMP_FLIP_BONUS + (campAdjacency.own - 1) * 4
+        : 0;
+    }
+
+    let bonus = 0;
+    if (move.type === 'move') {
+      const entersCamp = boardInstance.isCamp(move.to.col, move.to.row) &&
+        !boardInstance.isCamp(move.from.col, move.from.row);
+      const leavesCamp = boardInstance.isCamp(move.from.col, move.from.row) &&
+        !boardInstance.isCamp(move.to.col, move.to.row);
+      if (entersCamp) {
+        bonus += HARD_CAMP_MOVE_BONUS +
+          this._campSetupPotential(move, boardState, side) * HARD_CAMP_SETUP_BONUS;
+      }
+      if (leavesCamp) bonus -= HARD_CAMP_LEAVE_PENALTY;
+    }
+
+    const movingPieceSurvives = move.type === 'move' ||
+      (move.type === 'capture' && move.captureResult === CaptureResult.WIN);
+    if (movingPieceSurvives && settings && Number.isFinite(threatenedScore)) {
+      const nextState = this._simulateMove(boardState, move);
+      const nextThreatenedScore = this._threatenedPieceScore(nextState, settings, side);
+      bonus += (threatenedScore - nextThreatenedScore) * PROTECTION_BONUS_SCALE;
+    }
+    return bonus;
+  }
+
+  _campSetupPotential(move, boardState, side) {
+    if (move.type !== 'move' || !boardInstance.isCamp(move.to.col, move.to.row)) return 0;
+
+    const nextState = this._simulateMove(boardState, move);
+    let safeHiddenCount = 0;
+    for (const link of boardInstance.getAdjacentPositions(move.to.col, move.to.row)) {
+      const piece = nextState[link.pos];
+      if (!piece || piece.revealed || !piece.alive) continue;
+
+      const position = Board.parseKey(link.pos);
+      const campAdjacency = this._campAdjacency(position.col, position.row, nextState, side);
+      if (campAdjacency.own > 0 && campAdjacency.empty === 0) safeHiddenCount++;
+    }
+    return safeHiddenCount;
+  }
+
+  _threatenedPieceScore(boardState, settings, side) {
+    const threatened = new Map();
+    const opponent = this._oppositeSide(side);
+
+    for (const key in boardState) {
+      const attacker = boardState[key];
+      if (!attacker || !attacker.alive || !attacker.revealed || attacker.side !== opponent) continue;
+      if (!canMove(attacker.type)) continue;
+
+      const from = Board.parseKey(key);
+      const reachable = getReachablePositions(from.col, from.row, attacker, boardState, settings);
+      for (const target of reachable) {
+        const targetKey = Board.posKey(target.col, target.row);
+        const defender = boardState[targetKey];
+        if (!defender || !defender.alive || !defender.revealed || defender.side !== side) continue;
+
+        const result = judgeCapture(attacker, defender, settings, boardState);
+        if (result !== CaptureResult.WIN && result !== CaptureResult.DRAW) continue;
+        const risk = PieceValue[defender.type] * (result === CaptureResult.WIN ? 1 : 0.75);
+        threatened.set(targetKey, Math.max(threatened.get(targetKey) || 0, risk));
+      }
+    }
+    return Array.from(threatened.values()).reduce((total, value) => total + value, 0);
   }
 
   _pickPreferredFlip(flips, boardState, side) {
@@ -483,56 +638,74 @@ class AI {
       if (!piece.revealed) continue;
 
       const { col, row } = Board.parseKey(key);
-      score += sign * (8 + this._positionValue(col, row, piece));
-      if (piece.type === PieceType.FLAG) score -= sign * 35;
+      score += sign * (this._revealedPieceValue(piece) + this._positionValue(col, row, piece));
+      if (piece.type === PieceType.FLAG) score -= sign * FLAG_EXPOSURE_PENALTY;
     }
     return score;
+  }
+
+  _revealedPieceValue(piece) {
+    if (!canMove(piece.type)) return 0;
+    let value = 6 + Math.min(18, PieceValue[piece.type] * 0.12);
+    if (piece.type === PieceType.ENGINEER) value += 8;
+    if (piece.type === PieceType.BOMB) value += 5;
+    return value;
   }
 
   _positionValue(col, row, piece) {
     let value = 10 - Math.abs(col - 2) * 2 - Math.abs(row - 5.5) * 0.5;
     if (boardInstance.isOnRail(col, row) && canMove(piece.type)) value += 5;
-    if (boardInstance.isCamp(col, row)) value += 8;
+    if (boardInstance.isCamp(col, row)) value += CAMP_POSITION_BONUS;
     if (piece.type === PieceType.ENGINEER && boardInstance.isOnRail(col, row)) value += 5;
     return value;
   }
 
-  _sampleFlipOutcomes(boardState, move) {
+  _getHiddenPieceGroups(boardState) {
+    const groups = new Map();
     const hidden = Object.keys(boardState)
-      .filter(key => boardState[key] && !boardState[key].revealed)
+      .filter(key => boardState[key] && boardState[key].alive && !boardState[key].revealed)
       .map(key => ({ key, piece: boardState[key] }))
-      .sort((a, b) =>
-        `${a.piece.side}:${a.piece.type}:${a.piece.id}`.localeCompare(
-          `${b.piece.side}:${b.piece.type}:${b.piece.id}`
-        )
-      );
-    if (hidden.length === 0) return [];
+      .sort((a, b) => {
+        const categoryCompare = `${a.piece.side}:${a.piece.type}`.localeCompare(
+          `${b.piece.side}:${b.piece.type}`
+        );
+        if (categoryCompare !== 0) return categoryCompare;
+        return String(a.piece.id).localeCompare(String(b.piece.id));
+      });
 
-    const sampleCount = Math.min(this._flipSampleCount(hidden.length), hidden.length);
-    const offset = this._hashText(
-      `${this._stateKey(boardState)}|${move.from.col},${move.from.row}`
-    ) % hidden.length;
-    const outcomes = [];
-    for (let sample = 0; sample < sampleCount; sample++) {
-      const index = Math.floor(
-        (offset + ((sample + 0.5) * hidden.length) / sampleCount) % hidden.length
-      );
-      outcomes.push(this._simulateFlipOutcome(boardState, move, hidden[index].key));
+    for (const entry of hidden) {
+      const category = `${entry.piece.side}:${entry.piece.type}`;
+      const group = groups.get(category);
+      if (group) {
+        group.count++;
+      } else {
+        groups.set(category, {
+          side: entry.piece.side,
+          type: entry.piece.type,
+          count: 1,
+          sourceKey: entry.key
+        });
+      }
     }
-    return outcomes;
+    return Array.from(groups.values());
   }
 
-  _flipSampleCount(hiddenCount) {
-    return hiddenCount > 24 ? 3 : FLIP_OUTCOME_SAMPLES;
+  _getFlipOutcomes(boardState, move) {
+    const groups = this._getHiddenPieceGroups(boardState);
+    const totalCount = groups.reduce((total, group) => total + group.count, 0);
+    if (totalCount === 0) return [];
+
+    return groups.map(group => ({
+      side: group.side,
+      type: group.type,
+      count: group.count,
+      probability: group.count / totalCount,
+      state: this._simulateFlipOutcome(boardState, move, group.sourceKey)
+    }));
   }
 
-  _hashText(text) {
-    let hash = 2166136261;
-    for (let index = 0; index < text.length; index++) {
-      hash ^= text.charCodeAt(index);
-      hash = Math.imul(hash, 16777619);
-    }
-    return hash >>> 0;
+  _sampleFlipOutcomes(boardState, move) {
+    return this._getFlipOutcomes(boardState, move).map(outcome => outcome.state);
   }
 
   _simulateFlipOutcome(boardState, move, sourceKey) {
