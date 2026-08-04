@@ -261,6 +261,45 @@ test('easy AI also occupies a camp before flipping another hidden piece', () => 
   }
 });
 
+test('AI vacates a camp into the middle camp so an adjacent company can expand camp control', () => {
+  const boardState = {
+    [Board.posKey(3, 4)]: Object.assign(createPiece(PieceType.COMMANDER, Side.RED, 1), { revealed: true }),
+    [Board.posKey(3, 5)]: Object.assign(createPiece(PieceType.COMPANY, Side.RED, 2), { revealed: true }),
+    [Board.posKey(1, 0)]: Object.assign(createPiece(PieceType.FLAG, Side.RED, 3), { revealed: true }),
+    [Board.posKey(1, 11)]: Object.assign(createPiece(PieceType.FLAG, Side.BLUE, 4), { revealed: true }),
+    [Board.posKey(4, 0)]: createPiece(PieceType.PLATOON, Side.BLUE, 5)
+  };
+
+  for (const difficulty of [Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD]) {
+    const ai = new AI(Side.RED, difficulty);
+    const move = ai.getMove(boardState, DefaultSettings, { totalSteps: 23, noCapSteps: 1 });
+
+    assert.equal(move.type, 'move');
+    assert.deepEqual(move.from, { col: 3, row: 4 });
+    assert.deepEqual(move.to, { col: 2, row: 3 });
+    assert.equal(ai._campExpansionPotential(move, boardState, DefaultSettings, Side.RED), 1);
+  }
+});
+
+test('AI fills the vacated camp with the waiting company before flipping', () => {
+  const boardState = {
+    [Board.posKey(2, 3)]: Object.assign(createPiece(PieceType.COMMANDER, Side.RED, 1), { revealed: true }),
+    [Board.posKey(3, 5)]: Object.assign(createPiece(PieceType.COMPANY, Side.RED, 2), { revealed: true }),
+    [Board.posKey(1, 0)]: Object.assign(createPiece(PieceType.FLAG, Side.RED, 3), { revealed: true }),
+    [Board.posKey(1, 11)]: Object.assign(createPiece(PieceType.FLAG, Side.BLUE, 4), { revealed: true }),
+    [Board.posKey(4, 0)]: createPiece(PieceType.PLATOON, Side.BLUE, 5)
+  };
+
+  for (const difficulty of [Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD]) {
+    const ai = new AI(Side.RED, difficulty);
+    const move = ai.getMove(boardState, DefaultSettings, { totalSteps: 25, noCapSteps: 3 });
+
+    assert.equal(move.type, 'move');
+    assert.deepEqual(move.from, { col: 3, row: 5 });
+    assert.deepEqual(move.to, { col: 3, row: 4 });
+  }
+});
+
 test('hard AI occupies a camp that creates a safe adjacent flip', () => {
   const boardState = {
     [Board.posKey(1, 1)]: Object.assign(createPiece(PieceType.PLATOON, Side.RED, 1), { revealed: true }),

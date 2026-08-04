@@ -110,6 +110,7 @@ class AI {
     const candidates = safeMoves.length > 0 ? safeMoves : moves;
     this._shuffle(candidates);
     const captures = candidates.filter(move => move.type === 'capture');
+    const campExpansion = this._pickCampExpansionMove(candidates, boardState, settings, this.side);
     const campMoves = candidates.filter(move =>
       move.type === 'move' &&
       boardInstance.isCamp(move.to.col, move.to.row) &&
@@ -122,6 +123,7 @@ class AI {
     const preferredFlip = this._pickPreferredFlip(flips, boardState, this.side);
 
     if (captures.length > 0 && Math.random() > 0.3) return captures[0];
+    if (campExpansion) return campExpansion;
     if (campMoves.length > 0) return campMoves[0];
     if (flips.length === candidates.length) return preferredFlip;
     if (preferredFlip && Math.random() > 0.2) return preferredFlip;
@@ -132,6 +134,11 @@ class AI {
     const moves = this._getAllMoves(boardState, settings);
     if (moves.length === 0) return null;
     const threatenedScore = this._threatenedPieceScore(boardState, settings, this.side);
+    const hasCapture = moves.some(move => move.type === 'capture');
+    const campExpansion = this._pickCampExpansionMove(moves, boardState, settings, this.side);
+    if (!hasCapture && threatenedScore === 0 && campExpansion) return campExpansion;
+    const campEntry = this._pickCampEntryMove(moves, boardState, settings, this.side);
+    if (!hasCapture && threatenedScore === 0 && campEntry) return campEntry;
 
     for (const move of moves) {
       move.score = this._evaluateMove(move, boardState, settings) +
@@ -147,6 +154,11 @@ class AI {
   _hardMove(boardState, settings, searchState) {
     const allMoves = this._getAllMoves(boardState, settings);
     const threatenedScore = this._threatenedPieceScore(boardState, settings, this.side);
+    const hasCapture = allMoves.some(move => move.type === 'capture');
+    const campExpansion = this._pickCampExpansionMove(allMoves, boardState, settings, this.side);
+    if (!hasCapture && threatenedScore === 0 && campExpansion) return campExpansion;
+    const campEntry = this._pickCampEntryMove(allMoves, boardState, settings, this.side);
+    if (!hasCapture && threatenedScore === 0 && campEntry) return campEntry;
     const strategyBonuses = new Map(allMoves.map(move => [
       move,
       this._hardStrategyBonus(move, boardState, this.side, settings, threatenedScore)
@@ -576,6 +588,77 @@ class AI {
       if (campAdjacency.own > 0 && campAdjacency.empty === 0) safeHiddenCount++;
     }
     return safeHiddenCount;
+  }
+
+  _pickCampExpansionMove(moves, boardState, settings, side) {
+    const candidates = moves.map((move, index) => ({
+      move,
+      index,
+      potential: this._campExpansionPotential(move, boardState, settings, side)
+    })).filter(item => item.potential > 0);
+    if (candidates.length === 0) return null;
+
+    candidates.sort((a, b) =>
+      b.potential - a.potential ||
+      this._moveOrderScore(b.move, boardState, settings, side) -
+        this._moveOrderScore(a.move, boardState, settings, side) ||
+      a.index - b.index
+    );
+    return candidates[0].move;
+  }
+
+  _pickCampEntryMove(moves, boardState, settings, side) {
+    const candidates = moves.map((move, index) => ({
+      move,
+      index,
+      setupPotential: this._campSetupPotential(move, boardState, side)
+    })).filter(item =>
+      item.move.type === 'move' &&
+      boardInstance.isCamp(item.move.to.col, item.move.to.row) &&
+      !boardInstance.isCamp(item.move.from.col, item.move.from.row)
+    );
+    if (candidates.length === 0) return null;
+
+    candidates.sort((a, b) =>
+      b.setupPotential - a.setupPotential ||
+      this._moveOrderScore(b.move, boardState, settings, side) -
+        this._moveOrderScore(a.move, boardState, settings, side) ||
+      a.index - b.index
+    );
+    return candidates[0].move;
+  }
+
+  _campExpansionPotential(move, boardState, settings, side) {
+    if (
+      move.type !== 'move' ||
+      !boardInstance.isCamp(move.from.col, move.from.row) ||
+      !boardInstance.isCamp(move.to.col, move.to.row)
+    ) return 0;
+
+    const nextState = this._simulateMove(boardState, move);
+    let readyPieces = 0;
+    for (const link of boardInstance.getAdjacentPositions(move.from.col, move.from.row)) {
+      const piece = nextState[link.pos];
+      if (
+        !piece ||
+        !piece.alive ||
+        !piece.revealed ||
+        piece.side !== side ||
+        !canMove(piece.type)
+      ) continue;
+
+      const position = Board.parseKey(link.pos);
+      if (boardInstance.isCamp(position.col, position.row)) continue;
+      const canFillVacatedCamp = getReachablePositions(
+        position.col,
+        position.row,
+        piece,
+        nextState,
+        settings
+      ).some(target => target.col === move.from.col && target.row === move.from.row);
+      if (canFillVacatedCamp) readyPieces++;
+    }
+    return readyPieces;
   }
 
   _threatenedPieceScore(boardState, settings, side) {
